@@ -204,16 +204,13 @@ configure_firewall_strict() {
     # Loopback
     firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 0 -o lo -j ACCEPT
     
+    # Bloquer ICMP ping (sécurité)
+    firewall-cmd --permanent --add-icmp-block=echo-request
+    
     # Bloquer le reste (mode strict)
     firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 100 -j DROP
     
-    # Sécurité avancée
-    firewall-cmd --permanent --add-rich-rule='rule protocol value=tcp tcp-flags FIN,SYN,RST,PSH,ACK,URG mask=FIN,SYN,RST,PSH,ACK,URG drop'
-    firewall-cmd --permanent --add-rich-rule='rule protocol value=tcp tcp-flags FIN,SYN,RST,PSH,ACK,URG mask=NONE drop'
-    firewall-cmd --permanent --add-rich-rule='rule protocol value=tcp tcp-flags SYN limit value=10/s accept'
-    firewall-cmd --permanent --add-icmp-block=echo-request
-    
-    # Logging
+    # Logging des paquets rejetés
     firewall-cmd --permanent --set-log-denied=all
     
     # Reload
