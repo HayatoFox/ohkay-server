@@ -290,10 +290,10 @@ generate_secrets() {
     DB_PASSWORD=$(openssl rand -base64 48 | tr -d '\n')
     DB_ENCRYPTION_KEY=$(openssl rand -base64 64 | tr -d '\n')
     
-    # Demander le mot de passe serveur à l'utilisateur
+    # Demander le mot de passe d'instance à l'utilisateur
     echo ""
-    print_info "Configuration du mot de passe serveur"
-    print_warning "Ce mot de passe sera requis pour créer un serveur dans l'application"
+    print_info "Configuration du mot de passe d'instance"
+    print_warning "Ce mot de passe sera requis pour que les utilisateurs créent un compte sur votre instance Ohkay"
     echo ""
     
     # Proposer la génération automatique
@@ -303,7 +303,7 @@ generate_secrets() {
         # Générer un mot de passe fort lisible
         GENERATED_PASSWORD=$(openssl rand -base64 24 | tr -d '\n' | head -c 20)
         echo ""
-        print_success "Mot de passe généré (20 caractères):"
+        print_success "Mot de passe d'instance généré (20 caractères):"
         echo ""
         echo -e "  ${GREEN}${GENERATED_PASSWORD}${NC}"
         echo ""
@@ -311,29 +311,29 @@ generate_secrets() {
         echo ""
         read -p "  Appuyez sur Entrée après avoir copié le mot de passe..."
         
-        SERVER_PASSWORD="$GENERATED_PASSWORD"
-        print_success "Mot de passe fort configuré automatiquement"
+        INSTANCE_PASSWORD="$GENERATED_PASSWORD"
+        print_success "Mot de passe d'instance configuré automatiquement"
     else
         # Mode manuel
         echo ""
         while true; do
-            read -sp "  Entrez le mot de passe serveur: " SERVER_PASSWORD
+            read -sp "  Entrez le mot de passe d'instance: " INSTANCE_PASSWORD
             echo ""
             
-            if [ -z "$SERVER_PASSWORD" ]; then
+            if [ -z "$INSTANCE_PASSWORD" ]; then
                 print_error "Le mot de passe ne peut pas être vide"
                 continue
             fi
             
-            if [ ${#SERVER_PASSWORD} -lt 8 ]; then
+            if [ ${#INSTANCE_PASSWORD} -lt 8 ]; then
                 print_error "Le mot de passe doit contenir au moins 8 caractères"
                 continue
             fi
             
-            read -sp "  Confirmez le mot de passe: " SERVER_PASSWORD_CONFIRM
+            read -sp "  Confirmez le mot de passe: " INSTANCE_PASSWORD_CONFIRM
             echo ""
             
-            if [ "$SERVER_PASSWORD" != "$SERVER_PASSWORD_CONFIRM" ]; then
+            if [ "$INSTANCE_PASSWORD" != "$INSTANCE_PASSWORD_CONFIRM" ]; then
                 print_error "Les mots de passe ne correspondent pas"
                 continue
             fi
@@ -341,14 +341,14 @@ generate_secrets() {
             break
         done
         
-        print_success "Mot de passe serveur configuré"
+        print_success "Mot de passe d'instance configuré"
     fi
     
     echo ""
     print_success "Secrets cryptographiques générés (JWT, DB, Encryption)"
     
     verify_step "Secrets" \
-        "test -n '$JWT_SECRET' && test -n '$DB_PASSWORD' && test -n '$SERVER_PASSWORD'" \
+        "test -n '$JWT_SECRET' && test -n '$DB_PASSWORD' && test -n '$INSTANCE_PASSWORD'" \
         "Tous les secrets sont prêts" \
         "Échec génération secrets"
 }
@@ -383,7 +383,7 @@ DB_PASSWORD=$DB_PASSWORD
 
 # Security
 JWT_SECRET=$JWT_SECRET
-SERVER_PASSWORD=$SERVER_PASSWORD
+INSTANCE_PASSWORD=$INSTANCE_PASSWORD
 DB_ENCRYPTION_KEY=$DB_ENCRYPTION_KEY
 
 # Other
@@ -401,7 +401,7 @@ EOF
     echo ""
     print_warning "IMPORTANT - Informations de sécurité:"
     echo ""
-    echo "  ✓ Mot de passe serveur: (celui que vous avez choisi)"
+    echo "  ✓ Mot de passe d'instance: (celui que vous avez choisi)"
     echo "  ✓ Mot de passe DB: Généré automatiquement (64 caractères)"
     echo "  ✓ JWT Secret: Généré automatiquement (64 caractères)"
     echo "  ✓ Clé de chiffrement: Générée automatiquement (64 caractères)"
@@ -586,8 +586,8 @@ show_final_info() {
     print_info "Informations importantes:"
     echo ""
     echo "  📁 Répertoire: $INSTALL_DIR"
-    echo "  🔑 Mot de passe serveur: (celui que vous avez défini)"
-    echo "  � Secrets DB/JWT/Encryption: Générés automatiquement (voir .env)"
+    echo "  🔑 Mot de passe d'instance: (celui que vous avez défini)"
+    echo "  🔐 Secrets DB/JWT/Encryption: Générés automatiquement (voir .env)"
     echo "  🌐 URL Backend: http://$(hostname -I | awk '{print $1}'):8100"
     echo "  📊 Health check: http://localhost:8100/health"
     echo "  🔥 Pare-feu: port 8100 ouvert"
@@ -616,7 +616,7 @@ show_final_info() {
     echo "  cd $INSTALL_DIR && git pull && docker compose up -d --build"
     echo ""
     print_warning "IMPORTANT: Sauvegardez ces informations:"
-    echo "  - Mot de passe serveur: (celui que vous avez défini)"
+    echo "  - Mot de passe d'instance: (celui que vous avez défini)"
     echo "  - Tous les secrets: $INSTALL_DIR/.env (permissions 600)"
     echo "  - Backup du .env recommandé dans un gestionnaire de mots de passe"
     echo ""
@@ -647,7 +647,7 @@ interactive_mode() {
     echo ""
     read -p "Voulez-vous générer automatiquement les mots de passe? (O/n): " auto_pass
     if [[ "$auto_pass" =~ ^[Nn]$ ]]; then
-        read -sp "Mot de passe du serveur: " SERVER_PASSWORD
+        read -sp "Mot de passe d'instance: " INSTANCE_PASSWORD
         echo ""
         read -sp "Mot de passe PostgreSQL: " DB_PASSWORD
         echo ""
@@ -671,7 +671,7 @@ main() {
     
     # Mode interactif ou automatique
     if [[ "$1" == "--auto" ]]; then
-        print_error "Mode automatique désactivé: le mot de passe serveur doit être défini manuellement"
+        print_error "Mode automatique désactivé: le mot de passe d'instance doit être défini manuellement"
         exit 1
     else
         interactive_mode

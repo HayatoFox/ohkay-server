@@ -89,11 +89,11 @@ export const verifyToken = (token: string): { userId: number; username: string }
   }
 };
 
-export const verifyServerPassword = (password: string): boolean => {
-  const serverPassword = process.env.SERVER_PASSWORD;
-  if (!serverPassword) {
-    logger.error('SERVER_PASSWORD not configured');
+export const verifyInstancePassword = (password: string): boolean => {
+  const instancePassword = process.env.INSTANCE_PASSWORD;
+  if (!instancePassword) {
+    logger.error('INSTANCE_PASSWORD not configured');
     return false;
   }
-  return password === serverPassword;
+  return password === instancePassword;
 };

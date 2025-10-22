@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { dbManager } from '../utils/database';
-import { hashPassword, comparePassword, generateToken, verifyServerPassword } from '../utils/auth';
+import { hashPassword, comparePassword, generateToken, verifyInstancePassword } from '../utils/auth';
 import logger from '../utils/logger';
 
 const router = Router();
@@ -8,17 +8,17 @@ const router = Router();
 // Register new user
 router.post('/register', async (req: Request, res: Response) => {
   try {
-    const { username, password, serverPassword, displayName } = req.body;
+    const { username, password, instancePassword, displayName } = req.body;
 
-    if (!username || !password || !serverPassword) {
+    if (!username || !password || !instancePassword) {
       logger.warn('Registration attempt with missing fields');
-      return res.status(400).json({ error: 'Username, password, and server password are required' });
+      return res.status(400).json({ error: 'Username, password, and instance password are required' });
     }
 
-    // Verify server password
-    if (!verifyServerPassword(serverPassword)) {
-      logger.warn('Registration attempt with invalid server password', { username });
-      return res.status(403).json({ error: 'Invalid server password' });
+    // Verify instance password
+    if (!verifyInstancePassword(instancePassword)) {
+      logger.warn('Registration attempt with invalid instance password', { username });
+      return res.status(403).json({ error: 'Invalid instance password' });
     }
 
     // Check if username already exists
@@ -66,17 +66,11 @@ router.post('/register', async (req: Request, res: Response) => {
 // Login
 router.post('/login', async (req: Request, res: Response) => {
   try {
-    const { username, password, serverPassword } = req.body;
+    const { username, password } = req.body;
 
-    if (!username || !password || !serverPassword) {
+    if (!username || !password) {
       logger.warn('Login attempt with missing fields');
-      return res.status(400).json({ error: 'Username, password, and server password are required' });
-    }
-
-    // Verify server password
-    if (!verifyServerPassword(serverPassword)) {
-      logger.warn('Login attempt with invalid server password', { username });
-      return res.status(403).json({ error: 'Invalid server password' });
+      return res.status(400).json({ error: 'Username and password are required' });
     }
 
     // Find user with profile
