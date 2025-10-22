@@ -179,39 +179,40 @@ configure_firewall_strict() {
     # Reset
     firewall-cmd --complete-reload
     
-    # SSH avec rate limiting
-    firewall-cmd --permanent --zone=public --add-service=ssh
-    firewall-cmd --permanent --zone=public --add-rich-rule='rule service name=ssh limit value=3/m accept'
+    # SSH avec rate limiting (ignorer si déjà présent)
+    firewall-cmd --permanent --zone=public --add-service=ssh 2>/dev/null || true
+    firewall-cmd --permanent --zone=public --add-rich-rule='rule service name=ssh limit value=3/m accept' 2>/dev/null || true
     
-    # Port 8100 avec rate limiting
-    firewall-cmd --permanent --zone=public --add-port=8100/tcp
-    firewall-cmd --permanent --zone=public --add-rich-rule='rule port port=8100 protocol=tcp limit value=100/m accept'
+    # Port 8100 avec rate limiting (ignorer si déjà présent)
+    firewall-cmd --permanent --zone=public --add-port=8100/tcp 2>/dev/null || true
+    firewall-cmd --permanent --zone=public --add-rich-rule='rule port port=8100 protocol=tcp limit value=100/m accept' 2>/dev/null || true
     
-    # DNS
-    firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 0 -p udp --dport 53 -j ACCEPT
-    firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 0 -p tcp --dport 53 -j ACCEPT
+    # DNS (ignorer si déjà présent)
+    firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 0 -p udp --dport 53 -j ACCEPT 2>/dev/null || true
+    firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 0 -p tcp --dport 53 -j ACCEPT 2>/dev/null || true
     
-    # HTTP/HTTPS sortant
-    firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 0 -p tcp --dport 80 -j ACCEPT
-    firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 0 -p tcp --dport 443 -j ACCEPT
+    # HTTP/HTTPS sortant (ignorer si déjà présent)
+    firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 0 -p tcp --dport 80 -j ACCEPT 2>/dev/null || true
+    firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 0 -p tcp --dport 443 -j ACCEPT 2>/dev/null || true
     
-    # NTP
-    firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 0 -p udp --dport 123 -j ACCEPT
+    # NTP (ignorer si déjà présent)
+    firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 0 -p udp --dport 123 -j ACCEPT 2>/dev/null || true
     
-    # Connexions établies
-    firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 0 -m state --state ESTABLISHED,RELATED -j ACCEPT
+    # Connexions établies (ignorer si déjà présent)
+    firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 0 -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
     
-    # Loopback
-    firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 0 -o lo -j ACCEPT
+    # Loopback (ignorer si déjà présent)
+    firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 0 -o lo -j ACCEPT 2>/dev/null || true
     
-    # Bloquer ICMP ping (sécurité)
-    firewall-cmd --permanent --add-icmp-block=echo-request
+    # Bloquer ICMP ping (ignorer si déjà présent)
+    firewall-cmd --permanent --add-icmp-block=echo-request 2>/dev/null || true
     
-    # Bloquer le reste (mode strict)
-    firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 100 -j DROP
+    # Bloquer le reste (mode strict) (ignorer si déjà présent)
+    firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 100 -j DROP 2>/dev/null || true
     
     # Logging des paquets rejetés
-    firewall-cmd --permanent --set-log-denied=all
+    # Note: --set-log-denied fait automatiquement un changement runtime+permanent
+    firewall-cmd --set-log-denied=all 2>/dev/null || true
     
     # Reload
     firewall-cmd --reload
@@ -284,6 +285,13 @@ clone_repository() {
 # Génération des secrets
 generate_secrets() {
     print_header "Génération des secrets"
+    
+    # Vérifier si les secrets ont déjà été générés dans interactive_mode
+    if [[ -n "$INSTANCE_PASSWORD" && -n "$DB_PASSWORD" && -n "$JWT_SECRET" && -n "$DB_ENCRYPTION_KEY" ]]; then
+        print_info "Secrets déjà configurés en mode interactif"
+        print_success "Tous les secrets sont prêts"
+        return 0
+    fi
     
     # Génération automatique de secrets forts
     JWT_SECRET=$(openssl rand -base64 64 | tr -d '\n')
@@ -651,10 +659,12 @@ interactive_mode() {
         echo ""
         read -sp "Mot de passe PostgreSQL: " DB_PASSWORD
         echo ""
-        JWT_SECRET=$(openssl rand -base64 32)
-    else
-        generate_secrets
+        # Générer automatiquement les clés cryptographiques (même longueur qu'en auto)
+        JWT_SECRET=$(openssl rand -base64 64 | tr -d '\n')
+        DB_ENCRYPTION_KEY=$(openssl rand -base64 64 | tr -d '\n')
+        print_info "JWT_SECRET et DB_ENCRYPTION_KEY générés automatiquement"
     fi
+    # Note: Si auto_pass=O, generate_secrets sera appelé plus tard dans main()
     
     echo ""
     read -p "Configurer le backup automatique? (O/n): " setup_backup
