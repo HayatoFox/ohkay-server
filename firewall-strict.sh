@@ -120,7 +120,8 @@ sudo firewall-cmd --permanent --direct --add-rule ipv4 filter INPUT 1 -p tcp -m 
 echo "📝 Activation du logging..."
 
 # Logger tous les paquets rejetés
-sudo firewall-cmd --permanent --set-log-denied=all
+# Note: --set-log-denied fait automatiquement un changement runtime+permanent
+sudo firewall-cmd --set-log-denied=all
 
 # ============================================================================
 # 8. FAIL2BAN (recommandé pour protection SSH)
