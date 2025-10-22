@@ -104,21 +104,15 @@ sudo firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 100 -j DROP
 # ============================================================================
 echo "🛡️  Application règles de sécurité avancées..."
 
-# Bloquer les scans de ports (XMAS scan)
-sudo firewall-cmd --permanent --direct --add-rule ipv4 filter INPUT 0 -p tcp --tcp-flags FIN,SYN,RST,PSH,ACK,URG FIN,SYN,RST,PSH,ACK,URG -j DROP
+# Note: Les règles tcp-flags avancées sont incompatibles avec certaines versions de firewalld
+# On se concentre sur des protections de base compatibles partout
 
-# Bloquer les paquets NULL
-sudo firewall-cmd --permanent --direct --add-rule ipv4 filter INPUT 0 -p tcp --tcp-flags FIN,SYN,RST,PSH,ACK,URG NONE -j DROP
+# Bloquer ping (ICMP echo request) - protection contre scan réseau
+sudo firewall-cmd --permanent --zone=public --add-icmp-block=echo-request
 
-# Bloquer FIN scan
-sudo firewall-cmd --permanent --direct --add-rule ipv4 filter INPUT 0 -p tcp --tcp-flags FIN,SYN FIN,SYN -j DROP
-
-# Bloquer SYN flood (protection DDoS basique)
-sudo firewall-cmd --permanent --direct --add-rule ipv4 filter INPUT 0 -p tcp --syn -m limit --limit 10/s --limit-burst 20 -j ACCEPT
-sudo firewall-cmd --permanent --direct --add-rule ipv4 filter INPUT 1 -p tcp --syn -j DROP
-
-# Bloquer ping (ICMP echo request)
-sudo firewall-cmd --permanent --add-icmp-block=echo-request
+# Protection DDoS: limiter les nouvelles connexions TCP
+sudo firewall-cmd --permanent --direct --add-rule ipv4 filter INPUT 0 -p tcp -m conntrack --ctstate NEW -m limit --limit 60/s --limit-burst 20 -j ACCEPT
+sudo firewall-cmd --permanent --direct --add-rule ipv4 filter INPUT 1 -p tcp -m conntrack --ctstate NEW -j DROP
 
 # ============================================================================
 # 7. LOGGING
