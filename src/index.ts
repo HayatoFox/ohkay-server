@@ -26,6 +26,7 @@ const io = new Server(server, {
 });
 
 const PORT = process.env.PORT || 3000;
+const HOST = '0.0.0.0'; // Écouter sur toutes les interfaces
 
 // Security middleware
 app.use(helmet());
@@ -126,10 +127,11 @@ const startServer = async () => {
     }
     
     // Écouter sur 0.0.0.0 pour accepter les connexions externes
-    server.listen(PORT, '0.0.0.0', () => {
+    const port = Number(PORT);
+    server.listen(port, HOST, () => {
       logger.info(`Ohkay Server started`, {
-        port: PORT,
-        host: '0.0.0.0',
+        port: port,
+        host: HOST,
         env: process.env.NODE_ENV || 'development',
         nodeVersion: process.version,
       });
