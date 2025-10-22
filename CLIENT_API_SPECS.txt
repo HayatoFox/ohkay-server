@@ -1,0 +1,722 @@
+================================================================================
+OHKAY - SPECIFICATIONS TECHNIQUES POUR LE CLIENT
+================================================================================
+
+Date: 2025-10-22
+Version: 2.0 - Multi-Server Architecture
+
+
+================================================================================
+1. ARCHITECTURE GENERALE
+================================================================================
+
+Le client doit se connecter à un serveur Ohkay via:
+- IP publique du serveur
+- Port 3000 (par défaut)
+- Mot de passe serveur (défini lors de l'installation)
+
+Architecture Multi-Serveur (comme Discord):
+- Un utilisateur peut rejoindre plusieurs SERVEURS (guilds)
+- Chaque serveur contient des CHANNELS
+- Chaque serveur a des ROLES et PERMISSIONS
+- Les MESSAGES PRIVÉS (DM) sont séparés des serveurs
+
+Architecture:
+[Client] <---> [Serveur Ohkay] <---> [PostgreSQL]
+           WebSocket + REST API
+
+
+================================================================================
+2. PROTOCOLES DE COMMUNICATION
+================================================================================
+
+2.1 REST API (HTTP/HTTPS)
+--------------------------
+Base URL: http://<IP_SERVEUR>:3000
+
+Endpoints disponibles:
+
+A) Health Check
+   GET /health
+   Réponse: {"status":"ok","timestamp":"2025-10-22T..."}
+
+B) Inscription
+   POST /api/auth/register
+   Headers: Content-Type: application/json
+   Body: {
+     "username": "string",
+     "password": "string",
+     "serverPassword": "string",
+     "displayName": "string (optionnel)"
+   }
+   Réponse 201: {
+     "message": "User registered successfully",
+     "token": "jwt_token_string",
+     "user": {
+       "id": number,
+       "username": "string",
+       "displayName": "string",
+       "createdAt": "timestamp"
+     }
+   }
+
+C) Connexion
+   POST /api/auth/login
+   Headers: Content-Type: application/json
+   Body: {
+     "username": "string",
+     "password": "string",
+     "serverPassword": "string"
+   }
+   Réponse 200: {
+     "message": "Login successful",
+     "token": "jwt_token_string",
+     "user": {
+       "id": number,
+       "username": "string",
+       "displayName": "string",
+       "avatarUrl": "string ou null"
+     }
+   }
+
+D) Liste des serveurs de l'utilisateur
+   GET /api/servers
+   Headers: Authorization: Bearer <jwt_token>
+   Réponse 200: {
+     "servers": [
+       {
+         "id": number,
+         "name": "string",
+         "description": "string ou null",
+         "icon_url": "string ou null",
+         "owner_id": number,
+         "owner_username": "string",
+         "is_public": boolean,
+         "member_since": "timestamp",
+         "created_at": "timestamp"
+       }
+     ]
+   }
+
+E) Créer un serveur
+   POST /api/servers
+   Headers: 
+     Authorization: Bearer <jwt_token>
+     Content-Type: application/json
+   Body: {
+     "name": "string",
+     "description": "string (optionnel)"
+   }
+   Réponse 201: {
+     "message": "Server created",
+     "server": {
+       "id": number,
+       "name": "string",
+       "description": "string ou null",
+       "owner_id": number,
+       "is_public": boolean,
+       "invite_code": "string",
+       "created_at": "timestamp"
+     }
+   }
+
+F) Détails d'un serveur
+   GET /api/servers/:serverId
+   Headers: Authorization: Bearer <jwt_token>
+   Réponse 200: {
+     "server": {
+       "id": number,
+       "name": "string",
+       "description": "string",
+       "icon_url": "string ou null",
+       "owner_id": number,
+       "owner_username": "string",
+       "is_public": boolean,
+       "created_at": "timestamp"
+     }
+   }
+
+G) Channels d'un serveur
+   GET /api/servers/:serverId/channels
+   Headers: Authorization: Bearer <jwt_token>
+   Réponse 200: {
+     "channels": [
+       {
+         "id": number,
+         "server_id": number,
+         "name": "string",
+         "description": "string ou null",
+         "type": "text" | "voice",
+         "position": number,
+         "created_by": number,
+         "creator_username": "string",
+         "created_at": "timestamp"
+       }
+     ]
+   }
+
+H) Membres d'un serveur
+   GET /api/servers/:serverId/members
+   Headers: Authorization: Bearer <jwt_token>
+   Réponse 200: {
+     "members": [
+       {
+         "id": number,
+         "username": "string",
+         "display_name": "string",
+         "avatar_url": "string ou null",
+         "status": "string",
+         "nickname": "string ou null",
+         "joined_at": "timestamp"
+       }
+     ]
+   }
+
+I) Rejoindre un serveur via invitation
+   POST /api/servers/join/:inviteCode
+   Headers: Authorization: Bearer <jwt_token>
+   Réponse 200: {
+     "message": "Joined server successfully",
+     "server": {...}
+   }
+
+J) Créer une invitation
+   POST /api/servers/:serverId/invites
+   Headers: 
+     Authorization: Bearer <jwt_token>
+     Content-Type: application/json
+   Body: {
+     "maxUses": number (0 = illimité),
+     "expiresInHours": number (null = jamais)
+   }
+   Réponse 201: {
+     "invite": {
+       "id": number,
+       "server_id": number,
+       "code": "string",
+       "created_by": number,
+       "max_uses": number,
+       "current_uses": number,
+       "expires_at": "timestamp ou null",
+       "created_at": "timestamp"
+     }
+   }
+
+K) Créer un channel dans un serveur
+   POST /api/channels
+   Headers: 
+     Authorization: Bearer <jwt_token>
+     Content-Type: application/json
+   Body: {
+     "serverId": number,
+     "name": "string",
+     "description": "string (optionnel)",
+     "type": "text" | "voice",
+     "position": number
+   }
+   Réponse 201: {
+     "message": "Channel created",
+     "channel": {
+       "id": number,
+       "server_id": number,
+       "name": "string",
+       "type": "string",
+       "position": number,
+       "created_at": "timestamp"
+     }
+   }
+
+L) Messages d'un channel
+   GET /api/channels/:channelId/messages?limit=50
+   Headers: Authorization: Bearer <jwt_token>
+   Réponse 200: {
+     "messages": [
+       {
+         "id": number,
+         "channel_id": number,
+         "user_id": number,
+         "content": "string",
+         "is_edited": boolean,
+         "created_at": "timestamp",
+         "username": "string",
+         "display_name": "string",
+         "avatar_url": "string ou null"
+       }
+     ]
+   }
+
+
+2.2 WEBSOCKET (Socket.io)
+--------------------------
+URL: ws://<IP_SERVEUR>:3000
+Bibliothèque: Socket.io (compatible avec socket.io-client)
+
+A) Connexion WebSocket
+   const socket = io('http://<IP_SERVEUR>:3000', {
+     auth: {
+       token: 'jwt_token_obtenu_lors_du_login'
+     }
+   });
+
+B) Evénements Client → Serveur
+
+   join_server:
+     Payload: number (serverId)
+     Description: Rejoindre un serveur pour recevoir les événements
+     Exemple: socket.emit('join_server', 1);
+
+   leave_server:
+     Payload: number (serverId)
+     Description: Quitter un serveur
+     Exemple: socket.emit('leave_server', 1);
+
+   join_channel:
+     Payload: number (channelId)
+     Description: Rejoindre un channel pour recevoir les messages
+     Exemple: socket.emit('join_channel', 1);
+
+   leave_channel:
+     Payload: number (channelId)
+     Description: Quitter un channel
+     Exemple: socket.emit('leave_channel', 1);
+
+   send_message:
+     Payload: { channelId: number, content: string, serverId?: number }
+     Description: Envoyer un message dans un channel
+     Exemple: socket.emit('send_message', { channelId: 1, content: 'Hello!', serverId: 1 });
+
+   send_private_message:
+     Payload: { recipientId: number, content: string }
+     Description: Envoyer un message privé à un utilisateur
+     Exemple: socket.emit('send_private_message', { recipientId: 2, content: 'Hi!' });
+
+   typing:
+     Payload: number (channelId)
+     Description: Indiquer que l'utilisateur est en train d'écrire
+     Exemple: socket.emit('typing', 1);
+
+C) Evénements Serveur → Client
+
+   joined_server:
+     Payload: { serverId: number }
+     Description: Confirmation que vous avez rejoint le serveur
+
+   member_joined:
+     Payload: { userId: number, username: string }
+     Description: Un membre a rejoint le serveur
+
+   member_left:
+     Payload: { userId: number, username: string }
+     Description: Un membre a quitté le serveur
+
+   joined_channel:
+     Payload: { channelId: number }
+     Description: Confirmation que vous avez rejoint le channel
+
+   user_joined:
+     Payload: { userId: number, username: string }
+     Description: Un utilisateur a rejoint le channel
+
+   user_left:
+     Payload: { userId: number, username: string }
+     Description: Un utilisateur a quitté le channel
+
+   new_message:
+     Payload: {
+       id: number,
+       channel_id: number,
+       user_id: number,
+       content: string,
+       is_edited: boolean,
+       created_at: timestamp,
+       username: string,
+       display_name: string,
+       avatar_url: string | null
+     }
+     Description: Nouveau message dans un channel
+
+   new_private_message:
+     Payload: {
+       id: number,
+       user_id: number,
+       recipient_id: number,
+       content: string,
+       created_at: timestamp,
+       username: string,
+       display_name: string,
+       avatar_url: string | null
+     }
+     Description: Nouveau message privé reçu
+
+   user_typing:
+     Payload: { userId: number, username: string }
+     Description: Un utilisateur est en train d'écrire
+
+   error:
+     Payload: { message: string }
+     Description: Erreur survenue (message vide, etc.)
+
+
+================================================================================
+3. FLUX D'AUTHENTIFICATION
+================================================================================
+
+Étape 1: Demander au client l'IP du serveur et le mot de passe serveur
+Étape 2: Tester la connexion avec GET /health
+Étape 3: Proposer Inscription ou Connexion
+Étape 4: Si inscription → POST /api/auth/register
+         Si connexion → POST /api/auth/login
+Étape 5: Récupérer le JWT token de la réponse
+Étape 6: Stocker le token de manière sécurisée
+Étape 7: Établir la connexion WebSocket avec le token
+Étape 8: Récupérer la liste des serveurs via GET /api/servers
+Étape 9: Pour chaque serveur, rejoindre via socket.emit('join_server', serverId)
+Étape 10: Récupérer les channels d'un serveur via GET /api/servers/:serverId/channels
+
+
+================================================================================
+4. GESTION DES ERREURS
+================================================================================
+
+Codes HTTP:
+- 200: Succès
+- 201: Créé avec succès
+- 400: Requête invalide (champs manquants)
+- 401: Non authentifié (token manquant)
+- 403: Interdit (token invalide ou mot de passe serveur incorrect)
+- 404: Non trouvé
+- 409: Conflit (username déjà existant)
+- 500: Erreur serveur
+
+WebSocket:
+- 'connect_error': Erreur de connexion (token invalide)
+- 'error': Erreur applicative
+
+Toujours afficher le message d'erreur retourné par le serveur.
+
+
+================================================================================
+5. EXEMPLE DE FLUX COMPLET
+================================================================================
+
+1. Connexion initiale:
+   - Client demande: IP serveur (ex: 192.168.1.100)
+   - Client demande: Mot de passe serveur
+   - Test connexion: GET http://192.168.1.100:3000/health
+
+2. Authentification:
+   - Utilisateur choisit "S'inscrire"
+   - POST http://192.168.1.100:3000/api/auth/register
+   - Body: {username: "john", password: "pass123", serverPassword: "server_pwd"}
+   - Réception du token JWT
+
+3. Connexion WebSocket:
+   - io('http://192.168.1.100:3000', {auth: {token: 'jwt_token'}})
+   - Écoute de l'événement 'connect'
+
+4. Récupération des channels:
+   - GET http://192.168.1.100:3000/api/channels
+   - Header: Authorization: Bearer jwt_token
+   - Affichage de la liste des channels
+
+5. Rejoindre un channel:
+   - socket.emit('join_channel', 1)
+   - Écoute de 'joined_channel'
+
+6. Récupération de l'historique:
+   - GET http://192.168.1.100:3000/api/channels/1/messages?limit=50
+   - Affichage des messages
+
+7. Envoi de message:
+   - socket.emit('send_message', {channelId: 1, content: 'Hello world!'})
+   - Réception via 'new_message' pour tous les membres du channel
+
+8. Messages privés:
+   - socket.emit('send_private_message', {recipientId: 2, content: 'Hi!'})
+   - L'expéditeur et le destinataire reçoivent 'new_private_message'
+
+
+================================================================================
+6. STRUCTURE DES DONNEES
+================================================================================
+
+User:
+{
+  id: number
+  username: string (unique, 50 caractères max)
+  displayName: string (100 caractères max)
+  avatarUrl: string | null (500 caractères max)
+  createdAt: timestamp
+  lastSeen: timestamp
+}
+
+Channel:
+{
+  id: number
+  name: string (100 caractères max)
+  description: string | null
+  isPrivate: boolean
+  createdBy: number (userId)
+  createdAt: timestamp
+}
+
+Message:
+{
+  id: number
+  channelId: number | null
+  userId: number
+  content: string (texte)
+  isPrivate: boolean
+  recipientId: number | null (si message privé)
+  createdAt: timestamp
+  editedAt: timestamp | null
+  deletedAt: timestamp | null
+}
+
+
+================================================================================
+7. SECURITE
+================================================================================
+
+A) Stockage du token JWT:
+   - Ne jamais stocker en clair dans le code
+   - Utiliser le stockage sécurisé de la plateforme
+   - Expiration: 7 jours
+
+B) Mot de passe serveur:
+   - Demandé à chaque connexion à un nouveau serveur
+   - Peut être mémorisé par serveur (IP)
+
+C) Mots de passe utilisateur:
+   - Hashés avec bcrypt côté serveur (salt rounds: 10)
+   - Ne jamais stocker en clair côté client
+
+D) Transport:
+   - Utiliser HTTPS en production (avec reverse proxy Nginx)
+   - WebSocket over TLS (wss://)
+
+E) Rate limiting:
+   - 100 requêtes par IP toutes les 15 minutes
+   - Gérer les erreurs 429 (Too Many Requests)
+
+
+================================================================================
+8. RECOMMANDATIONS POUR LE CLIENT
+================================================================================
+
+Technologies recommandées:
+- Web: React/Vue.js + socket.io-client + axios/fetch
+- Desktop: Electron + socket.io-client
+- Mobile: React Native + socket.io-client
+- Mobile natif: 
+  - iOS: Swift + Starscream (WebSocket) + Alamofire (HTTP)
+  - Android: Kotlin + Socket.io-client-java
+
+Fonctionnalités minimales:
+- Configuration serveur (IP + mot de passe)
+- Authentification (inscription/connexion)
+- Liste des channels
+- Envoi/réception de messages en temps réel
+- Messages privés
+- Indicateur de frappe (typing)
+- Notifications
+- Déconnexion propre
+
+Fonctionnalités avancées:
+- Gestion multi-serveurs
+- Historique des messages (pagination)
+- Recherche de messages
+- Édition/suppression de messages
+- Upload de fichiers (à implémenter côté serveur)
+- Appels vocaux (à implémenter)
+- Emojis et réactions
+- Mode hors ligne avec synchronisation
+
+
+================================================================================
+9. EXEMPLE DE CODE CLIENT (JavaScript)
+================================================================================
+
+// Configuration
+const SERVER_IP = '192.168.1.100';
+const SERVER_PORT = 3000;
+const BASE_URL = `http://${SERVER_IP}:${SERVER_PORT}`;
+
+// 1. Inscription
+async function register(username, password, serverPassword, displayName) {
+  const response = await fetch(`${BASE_URL}/api/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password, serverPassword, displayName })
+  });
+  const data = await response.json();
+  if (response.ok) {
+    localStorage.setItem('jwt_token', data.token);
+    localStorage.setItem('user', JSON.stringify(data.user));
+    return data;
+  }
+  throw new Error(data.error);
+}
+
+// 2. Connexion
+async function login(username, password, serverPassword) {
+  const response = await fetch(`${BASE_URL}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password, serverPassword })
+  });
+  const data = await response.json();
+  if (response.ok) {
+    localStorage.setItem('jwt_token', data.token);
+    localStorage.setItem('user', JSON.stringify(data.user));
+    return data;
+  }
+  throw new Error(data.error);
+}
+
+// 3. WebSocket
+function connectWebSocket() {
+  const token = localStorage.getItem('jwt_token');
+  const socket = io(BASE_URL, {
+    auth: { token }
+  });
+
+  socket.on('connect', () => {
+    console.log('Connected to server');
+  });
+
+  socket.on('connect_error', (error) => {
+    console.error('Connection error:', error);
+  });
+
+  socket.on('new_message', (message) => {
+    console.log('New message:', message);
+    // Ajouter le message à l'interface
+  });
+
+  socket.on('new_private_message', (message) => {
+    console.log('New private message:', message);
+    // Afficher notification
+  });
+
+  return socket;
+}
+
+// 4. Récupérer les channels
+async function getChannels() {
+  const token = localStorage.getItem('jwt_token');
+  const response = await fetch(`${BASE_URL}/api/channels`, {
+    headers: { 'Authorization': `Bearer ${token}` }
+  });
+  const data = await response.json();
+  return data.channels;
+}
+
+// 5. Rejoindre un channel
+function joinChannel(socket, channelId) {
+  socket.emit('join_channel', channelId);
+  
+  socket.once('joined_channel', ({ channelId: joinedId }) => {
+    console.log('Joined channel:', joinedId);
+  });
+}
+
+// 6. Envoyer un message
+function sendMessage(socket, channelId, content) {
+  socket.emit('send_message', { channelId, content });
+}
+
+// 7. Récupérer l'historique
+async function getMessages(channelId, limit = 50) {
+  const token = localStorage.getItem('jwt_token');
+  const response = await fetch(
+    `${BASE_URL}/api/channels/${channelId}/messages?limit=${limit}`,
+    { headers: { 'Authorization': `Bearer ${token}` } }
+  );
+  const data = await response.json();
+  return data.messages;
+}
+
+// 8. Utilisation complète
+async function main() {
+  try {
+    // Connexion
+    await login('john', 'password123', 'server_password');
+    
+    // WebSocket
+    const socket = connectWebSocket();
+    
+    // Récupérer les channels
+    const channels = await getChannels();
+    console.log('Channels:', channels);
+    
+    // Rejoindre le premier channel
+    if (channels.length > 0) {
+      joinChannel(socket, channels[0].id);
+      
+      // Récupérer l'historique
+      const messages = await getMessages(channels[0].id);
+      console.log('Messages:', messages);
+      
+      // Envoyer un message
+      sendMessage(socket, channels[0].id, 'Hello from client!');
+    }
+  } catch (error) {
+    console.error('Error:', error);
+  }
+}
+
+
+================================================================================
+10. TESTS ET VALIDATION
+================================================================================
+
+Outils recommandés pour tester:
+- Postman/Insomnia: Tester les endpoints REST
+- Postman WebSocket: Tester les événements WebSocket
+- curl: Tests rapides en ligne de commande
+
+Exemple de test avec curl:
+
+# Health check
+curl http://192.168.1.100:3000/health
+
+# Inscription
+curl -X POST http://192.168.1.100:3000/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"username":"test","password":"test123","serverPassword":"server_pwd"}'
+
+# Connexion
+curl -X POST http://192.168.1.100:3000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"test","password":"test123","serverPassword":"server_pwd"}'
+
+# Liste channels (remplacer JWT_TOKEN)
+curl http://192.168.1.100:3000/api/channels \
+  -H "Authorization: Bearer JWT_TOKEN"
+
+
+================================================================================
+11. SUPPORT ET MAINTENANCE
+================================================================================
+
+Logs serveur:
+- Application: /opt/ohkay-server/logs/application-YYYY-MM-DD.log
+- Erreurs: /opt/ohkay-server/logs/error-YYYY-MM-DD.log
+- Docker: docker compose logs -f
+
+Commandes utiles:
+- Statut: systemctl status ohkay-server
+- Redémarrer: systemctl restart ohkay-server
+- Logs temps réel: cd /opt/ohkay-server && docker compose logs -f
+
+Le client doit gérer:
+- Reconnexion automatique en cas de perte de connexion
+- Mise en file des messages si déconnecté
+- Affichage d'un indicateur de connexion
+- Gestion des timeouts
+
+
+================================================================================
+FIN DU DOCUMENT
+================================================================================

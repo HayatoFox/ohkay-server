@@ -1,0 +1,487 @@
+================================================================================
+OHKAY SERVER - ÉTAT DU PROJET
+================================================================================
+Date: 2025-10-22
+Dernière mise à jour: Restructuration complète multi-serveur terminée
+
+================================================================================
+1. OBJECTIF DU PROJET
+================================================================================
+
+Créer une alternative auto-hébergée à Discord avec :
+- Architecture multi-serveur (comme Discord : 1 instance = plusieurs "guilds")
+- Messages privés (DM) séparés des serveurs
+- Client Electron léger (Windows + Linux plus tard)
+- Déploiement Docker simple et bien loggé
+- Support AlmaLinux 9
+
+================================================================================
+2. ARCHITECTURE ACTUELLE
+================================================================================
+
+STACK TECHNIQUE:
+- Backend: Node.js 20 + TypeScript (strict mode)
+- API: Express.js avec Socket.io pour WebSocket
+- Database: PostgreSQL 16
+- Logging: Winston avec rotation quotidienne
+- Containerisation: Docker + Docker Compose
+- Client: Electron + React + TypeScript + Vite
+
+STRUCTURE:
+ohkay-server/
+├── src/
+│   ├── index.ts              # Entry point Express + Socket.io
+│   ├── routes/
+│   │   ├── auth.ts           # POST /api/auth/register, /login
+│   │   ├── servers.ts        # Gestion serveurs (NEW)
+│   │   └── channels.ts       # Gestion channels
+│   ├── socket/
+│   │   └── handlers.ts       # WebSocket events
+│   └── utils/
+│       ├── auth.ts           # JWT + bcrypt
+│       ├── database.ts       # PostgreSQL pool
+│       └── logger.ts         # Winston config
+├── init.sql                  # Schéma DB multi-serveur (NEW)
+├── Dockerfile                # Multi-stage build
+├── docker-compose.yml        # App + PostgreSQL
+├── install-almalinux.sh      # Installation automatique AlmaLinux 9
+├── test-api.ps1              # Suite de tests PowerShell (NEW)
+├── CLIENT_API_SPECS.txt      # Documentation API complète
+└── client/                   # Client Electron (dossier séparé, non cloné)
+    ├── src/
+    │   ├── App.tsx
+    │   ├── components/
+    │   │   ├── LoginScreen.tsx
+    │   │   ├── MainLayout.tsx
+    │   │   ├── ChannelList.tsx
+    │   │   └── ChatArea.tsx
+    │   └── store/
+    │       ├── authStore.ts
+    │       ├── serverStore.ts
+    │       └── chatStore.ts
+    └── package.json
+
+================================================================================
+3. BASE DE DONNÉES - SCHÉMA MULTI-SERVEUR
+================================================================================
+
+TABLES PRINCIPALES:
+
+users
+├── id (SERIAL PRIMARY KEY)
+├── username (UNIQUE)
+├── password_hash
+├── display_name
+├── avatar_url
+├── status
+├── last_seen
+└── created_at
+
+servers (GUILDS)
+├── id (SERIAL PRIMARY KEY)
+├── name
+├── description
+├── icon_url
+├── owner_id (FK -> users.id)
+├── is_public
+├── invite_code (UNIQUE, 8 chars)
+└── created_at
+
+server_members
+├── server_id (FK -> servers.id)
+├── user_id (FK -> users.id)
+├── nickname
+└── joined_at
+└── PRIMARY KEY (server_id, user_id)
+
+roles
+├── id (SERIAL PRIMARY KEY)
+├── server_id (FK -> servers.id)
+├── name
+├── color
+├── position
+├── permissions (BIGINT - bitfield 64-bit)
+├── is_mentionable
+└── created_at
+
+member_roles
+├── server_id (FK -> servers.id)
+├── user_id (FK -> users.id)
+├── role_id (FK -> roles.id)
+└── PRIMARY KEY (server_id, user_id, role_id)
+
+channels
+├── id (SERIAL PRIMARY KEY)
+├── server_id (FK -> servers.id)
+├── name
+├── description
+├── type ('text' ou 'voice')
+├── position
+├── is_private
+├── created_by (FK -> users.id)
+└── created_at
+
+messages
+├── id (SERIAL PRIMARY KEY)
+├── channel_id (FK -> channels.id, NULLABLE pour DMs)
+├── user_id (FK -> users.id)
+├── recipient_id (FK -> users.id, pour DMs)
+├── content
+├── is_private (boolean)
+├── is_edited (boolean)
+├── created_at
+└── deleted_at
+
+dm_conversations
+├── id (SERIAL PRIMARY KEY)
+├── user1_id (FK -> users.id)
+├── user2_id (FK -> users.id)
+├── last_message_at
+└── created_at
+└── UNIQUE (user1_id, user2_id)
+
+invites
+├── id (SERIAL PRIMARY KEY)
+├── server_id (FK -> servers.id)
+├── code (UNIQUE, 8 chars)
+├── created_by (FK -> users.id)
+├── max_uses (0 = illimité)
+├── current_uses
+├── expires_at (NULLABLE)
+└── created_at
+
+FONCTIONNEMENT:
+- Quand un serveur est créé, un channel "general" et un rôle "@everyone" sont automatiquement créés
+- Les invitations peuvent avoir une expiration et un nombre max d'utilisations
+- Les DMs sont stockés dans messages avec recipient_id et is_private=true
+- Les permissions utilisent un système de bitfield 64-bit (non implémenté complètement)
+
+================================================================================
+4. API REST - ENDPOINTS DISPONIBLES
+================================================================================
+
+AUTHENTICATION:
+POST /api/auth/register
+  Body: { username, password, serverPassword, displayName }
+  Response: { token, user }
+
+POST /api/auth/login
+  Body: { username, password, serverPassword }
+  Response: { token, user }
+
+SERVEURS:
+GET /api/servers
+  Headers: Authorization: Bearer <token>
+  Response: { servers: [...] }
+
+POST /api/servers
+  Headers: Authorization: Bearer <token>
+  Body: { name, description }
+  Response: { server: {...} }
+
+GET /api/servers/:id
+  Response: { server: {...} }
+
+GET /api/servers/:id/channels
+  Response: { channels: [...] }
+
+GET /api/servers/:id/members
+  Response: { members: [...] }
+
+POST /api/servers/:id/invites
+  Body: { maxUses, expiresInHours }
+  Response: { invite: {...} }
+
+POST /api/servers/join/:inviteCode
+  Response: { message, server }
+
+CHANNELS:
+POST /api/channels
+  Body: { serverId, name, description, type, position }
+  Response: { channel: {...} }
+
+GET /api/channels/:id/messages?limit=50
+  Response: { messages: [...] }
+
+================================================================================
+5. WEBSOCKET - ÉVÉNEMENTS SOCKET.IO
+================================================================================
+
+CONNEXION:
+const socket = io('http://IP:3000', {
+  auth: { token: 'JWT_TOKEN' }
+});
+
+ÉVÉNEMENTS CLIENT -> SERVEUR:
+- join_server(serverId)           : Rejoindre un serveur
+- leave_server(serverId)          : Quitter un serveur
+- join_channel(channelId)         : Rejoindre un channel
+- leave_channel(channelId)        : Quitter un channel
+- send_message({ channelId, content, serverId })
+- send_private_message({ recipientId, content })
+- typing(channelId)
+
+ÉVÉNEMENTS SERVEUR -> CLIENT:
+- joined_server({ serverId })
+- member_joined({ userId, username })
+- member_left({ userId, username })
+- new_message({ id, content, username, ... })
+- new_private_message({ ... })
+- user_typing({ userId, username })
+- error({ message })
+
+================================================================================
+6. TESTS - COMMENT TESTER LE BACKEND
+================================================================================
+
+AVEC DOCKER:
+1. Démarrer les services:
+   docker-compose up -d
+
+2. Lancer les tests PowerShell:
+   .\test-api.ps1
+
+Le script teste automatiquement:
+- Health check
+- Inscription/connexion utilisateur
+- Création de serveur (avec channel "general" auto)
+- Liste des serveurs
+- Récupération des channels
+- Création d'un nouveau channel
+- Liste des membres
+- Génération d'invitation avec expiration
+
+RÉSULTAT ATTENDU:
+Tous les tests doivent passer avec [OK]
+
+AVEC CURL (manuel):
+# Health
+curl http://localhost:3000/health
+
+# Register
+curl -X POST http://localhost:3000/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"username":"test","password":"pass","serverPassword":"test123"}'
+
+# Login
+curl -X POST http://localhost:3000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"test","password":"pass","serverPassword":"test123"}'
+
+# Créer serveur (avec token)
+curl -X POST http://localhost:3000/api/servers \
+  -H "Authorization: Bearer TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Mon Serveur"}'
+
+================================================================================
+7. CONFIGURATION - VARIABLES D'ENVIRONNEMENT
+================================================================================
+
+Fichier .env à créer:
+
+# Database
+DATABASE_URL=postgresql://ohkay_user:password@db:5432/ohkay
+DB_USER=ohkay_user
+DB_PASSWORD=your_secure_password_here
+DB_NAME=ohkay
+DB_HOST=db
+DB_PORT=5432
+
+# JWT
+JWT_SECRET=your_super_secret_jwt_key_here_minimum_32_chars
+
+# Server
+PORT=3000
+SERVER_PASSWORD=test123
+
+# CORS
+CORS_ORIGIN=*
+
+# Node
+NODE_ENV=production
+
+IMPORTANT:
+- SERVER_PASSWORD : Mot de passe global pour s'inscrire/connecter au serveur
+- JWT_SECRET : Minimum 32 caractères pour sécurité
+- DB_PASSWORD : Doit correspondre à docker-compose.yml
+
+================================================================================
+8. CLIENT ELECTRON - ÉTAT ACTUEL
+================================================================================
+
+LOCALISATION:
+C:\Users\Raphaël-Alexandre\ohkay-server\client
+
+FONCTIONNALITÉS ACTUELLES:
+✅ Écran de connexion (IP serveur + mot de passe serveur)
+✅ Inscription/Connexion utilisateur
+✅ Connexion WebSocket avec JWT
+✅ Affichage liste channels
+✅ Envoi/réception messages temps réel
+✅ Messages privés
+✅ Indicateur de frappe (typing)
+✅ Stockage localStorage (token + config serveur)
+
+À FAIRE (TODO PROCHAINE ÉTAPE):
+❌ Sidebar serveurs (gauche) - liste verticale des serveurs de l'utilisateur
+❌ Section DMs séparée - en haut de la sidebar serveurs
+❌ Changement de serveur actif
+❌ Liste channels du serveur actif uniquement
+❌ Panel membres (droite) - liste des membres du serveur
+❌ Bouton créer serveur
+❌ Modal rejoindre serveur via code invitation
+
+STORE ZUSTAND:
+- authStore.ts : { user, token, serverConfig, login, logout }
+- serverStore.ts : { servers, currentServer, setCurrentServer }
+- chatStore.ts : { channels, messages, sendMessage }
+
+================================================================================
+9. COMMANDES UTILES
+================================================================================
+
+BACKEND:
+# Compiler TypeScript
+npm run build
+
+# Démarrer en dev
+npm run dev
+
+# Docker
+docker-compose up -d              # Démarrer
+docker-compose down               # Arrêter
+docker-compose down -v            # Arrêter + supprimer volumes
+docker-compose up -d --build      # Rebuild image
+docker-compose logs -f app        # Voir logs serveur
+docker-compose logs -f postgres   # Voir logs database
+
+# Tests
+.\test-api.ps1
+
+CLIENT:
+cd client
+npm install
+npm run dev        # Démarre Vite dev server + Electron
+
+================================================================================
+10. PROBLÈMES CONNUS ET SOLUTIONS
+================================================================================
+
+ERREUR: Port 3000 déjà utilisé
+Solution: netstat -ano | findstr :3000
+         taskkill /PID <PID> /F
+
+ERREUR: "relation servers does not exist"
+Solution: docker-compose down -v
+         docker-compose up -d
+         (Recrée la DB avec le nouveau schéma)
+
+ERREUR: Docker "dependency failed to start"
+Solution: Vérifier que init.sql n'a pas d'erreurs SQL
+         docker-compose logs postgres
+
+ERREUR: Client ne se connecte pas au serveur
+Solution: Vérifier SERVER_PASSWORD dans .env
+         Vérifier firewall (port 3000)
+         Vérifier logs: docker-compose logs -f app
+
+================================================================================
+11. PROCHAINES ÉTAPES RECOMMANDÉES
+================================================================================
+
+IMMÉDIAT (Client UI):
+1. Créer composant ServerSidebar.tsx
+   - Afficher liste serveurs avec icônes
+   - Bouton + pour créer serveur
+   - Section DMs en haut
+   - Highlight serveur actif
+
+2. Créer composant MemberList.tsx
+   - Liste membres du serveur actif
+   - Statut en ligne/hors ligne
+   - Rôles colorés
+
+3. Mettre à jour MainLayout.tsx
+   - Intégrer ServerSidebar (gauche)
+   - Intégrer MemberList (droite)
+   - Gérer sélection serveur
+
+4. Créer modals:
+   - CreateServerModal.tsx (nom + description)
+   - JoinServerModal.tsx (code invitation)
+
+MOYEN TERME:
+- Implémentation complète système de permissions
+- Upload avatars + icônes serveurs
+- Édition/suppression messages
+- Réactions sur messages
+- Mentions (@user, @role, @everyone)
+- Recherche de messages
+
+LONG TERME:
+- Channels vocaux (WebRTC)
+- Partage de fichiers
+- Embeds et formatting markdown avancé
+- Notifications desktop
+- Support Linux client
+
+================================================================================
+12. ARCHITECTURE CIBLE (DISCORD-LIKE)
+================================================================================
+
+UI CLIENT FINALE:
+
+┌─────────┬──────────────────┬─────────────┐
+│ Server  │  Channel List    │   Members   │
+│ List    │  ┌─────────────┐ │  ┌────────┐ │
+│ ┌─────┐ │  │ # general   │ │  │ @user1 │ │
+│ │ DMs │ │  │ # random    │ │  │ @user2 │ │
+│ ├─────┤ │  │ # memes     │ │  │ @user3 │ │
+│ │ S1  │ │  └─────────────┘ │  └────────┘ │
+│ │ S2  │ │                  │             │
+│ │ S3  │ │  Chat Area       │  Roles:     │
+│ │ +   │ │  ┌─────────────┐ │  Admin      │
+│ └─────┘ │  │ Messages... │ │  Member     │
+└─────────┴──│             │─┴─────────────┘
+            │ [Input box] │
+            └─────────────┘
+
+FLUX UTILISATEUR:
+1. Connexion au serveur Ohkay (IP + mot de passe)
+2. Login/Register
+3. Affichage serveurs disponibles
+4. Sélection d'un serveur
+5. Affichage channels + membres de ce serveur
+6. Discussion temps réel
+7. Possibilité de créer nouveau serveur ou rejoindre via code
+
+================================================================================
+13. NOTES IMPORTANTES
+================================================================================
+
+- Le dossier client/ est exclu du dépôt Git (voir .gitignore)
+- Le mot de passe serveur par défaut est "test123" (à changer en prod)
+- JWT expire après 7 jours
+- Logs conservés 14 jours (app.log) et 30 jours (error.log)
+- Rate limiting: 100 requêtes/15min par IP
+- Le code est en TypeScript strict mode
+- Tous les tests backend passent ✅
+
+================================================================================
+14. CONTACT ET DOCUMENTATION
+================================================================================
+
+Documentation API complète: CLIENT_API_SPECS.txt
+Script installation AlmaLinux: install-almalinux.sh
+Tests automatiques: test-api.ps1
+
+Pour reprendre le développement:
+1. Lire ce fichier PROJECT_STATE.txt
+2. Vérifier que Docker tourne: docker-compose ps
+3. Lancer les tests: .\test-api.ps1
+4. Continuer avec la TODO list (section 11)
+
+================================================================================
+FIN DU DOCUMENT
+================================================================================
