@@ -35,7 +35,7 @@ services:
       
       # Security
       - JWT_SECRET=${JWT_SECRET}
-      - SERVER_PASSWORD=${SERVER_PASSWORD}
+      - INSTANCE_PASSWORD=${INSTANCE_PASSWORD}
       - DB_ENCRYPTION_KEY=${DB_ENCRYPTION_KEY:-change-me-in-production}
       
       # Logging
