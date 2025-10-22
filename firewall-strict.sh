@@ -104,15 +104,8 @@ sudo firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 100 -j DROP
 # ============================================================================
 echo "🛡️  Application règles de sécurité avancées..."
 
-# Note: Les règles tcp-flags avancées sont incompatibles avec certaines versions de firewalld
-# On se concentre sur des protections de base compatibles partout
-
 # Bloquer ping (ICMP echo request) - protection contre scan réseau
 sudo firewall-cmd --permanent --add-icmp-block=echo-request
-
-# Protection DDoS: limiter les nouvelles connexions TCP
-sudo firewall-cmd --permanent --direct --add-rule ipv4 filter INPUT 0 -p tcp -m conntrack --ctstate NEW -m limit --limit 60/s --limit-burst 20 -j ACCEPT
-sudo firewall-cmd --permanent --direct --add-rule ipv4 filter INPUT 1 -p tcp -m conntrack --ctstate NEW -j DROP
 
 # ============================================================================
 # 7. LOGGING
