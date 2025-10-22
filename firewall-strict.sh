@@ -108,7 +108,7 @@ echo "🛡️  Application règles de sécurité avancées..."
 # On se concentre sur des protections de base compatibles partout
 
 # Bloquer ping (ICMP echo request) - protection contre scan réseau
-sudo firewall-cmd --permanent --zone=public --add-icmp-block=echo-request
+sudo firewall-cmd --permanent --add-icmp-block=echo-request
 
 # Protection DDoS: limiter les nouvelles connexions TCP
 sudo firewall-cmd --permanent --direct --add-rule ipv4 filter INPUT 0 -p tcp -m conntrack --ctstate NEW -m limit --limit 60/s --limit-burst 20 -j ACCEPT
