@@ -1,48 +1,42 @@
-import { Router, Request, Response } from 'express';
-import { query } from '../utils/database';
-import { verifyToken } from '../utils/auth';
+import { Router, Response } from 'express';
+import { dbManager } from '../utils/database';
+import { authenticateToken, AuthRequest } from '../utils/auth';
 import logger from '../utils/logger';
 
 const router = Router();
 
-// Middleware d'authentification
-const authenticateToken = (req: Request, res: Response, next: Function): void => {
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
-
-  if (!token) {
-    res.status(401).json({ error: 'Access token required' });
-    return;
-  }
-
-  const decoded = verifyToken(token);
-  if (!decoded) {
-    res.status(403).json({ error: 'Invalid or expired token' });
-    return;
-  }
-
-  (req as any).user = decoded;
-  next();
-};
-
 // Obtenir tous les serveurs de l'utilisateur
-router.get('/', authenticateToken, async (req: Request, res: Response) => {
+router.get('/', authenticateToken, async (req: AuthRequest, res: Response) => {
   try {
-    const userId = (req as any).user.userId;
+    const userId = req.user?.id;
 
-    const result = await query(
-      `SELECT s.*, u.username as owner_username,
-              sm.joined_at as member_since
+    // Récupérer les serveurs depuis registry_db avec leurs membres
+    const result = await dbManager.queryRegistry(
+      `SELECT s.id, s.name, s.description, s.icon_url, s.owner_id, s.is_public, 
+              s.created_at, sm.joined_at as member_since
        FROM servers s
-       LEFT JOIN users u ON s.owner_id = u.id
        INNER JOIN server_members sm ON s.id = sm.server_id
-       WHERE sm.user_id = $1
+       WHERE sm.user_id = $1 AND s.status = 'active'
        ORDER BY sm.joined_at ASC`,
       [userId]
     );
 
-    logger.info('Servers fetched', { count: result.rows.length, userId });
-    return res.json({ servers: result.rows });
+    // Enrichir avec les infos du propriétaire depuis auth_db
+    const servers = await Promise.all(
+      result.rows.map(async (server: any) => {
+        const ownerResult = await dbManager.queryAuth(
+          'SELECT username FROM users WHERE id = $1',
+          [server.owner_id]
+        );
+        return {
+          ...server,
+          ownerUsername: ownerResult.rows[0]?.username
+        };
+      })
+    );
+
+    logger.info('Servers fetched', { count: servers.length, userId });
+    return res.json({ servers });
   } catch (error: any) {
     logger.error('Error fetching servers', { error: error.message });
     return res.status(500).json({ error: 'Failed to fetch servers' });
@@ -50,58 +44,90 @@ router.get('/', authenticateToken, async (req: Request, res: Response) => {
 });
 
 // Créer un nouveau serveur
-router.post('/', authenticateToken, async (req: Request, res: Response) => {
+router.post('/', authenticateToken, async (req: AuthRequest, res: Response) => {
   try {
     const { name, description } = req.body;
-    const userId = (req as any).user.userId;
+    const userId = req.user?.id;
 
-    if (!name) {
+    if (!name || name.trim().length === 0) {
       return res.status(400).json({ error: 'Server name is required' });
     }
 
-    // Créer le serveur
-    const serverResult = await query(
-      'INSERT INTO servers (name, description, owner_id) VALUES ($1, $2, $3) RETURNING *',
-      [name, description || null, userId]
+    if (name.length > 100) {
+      return res.status(400).json({ error: 'Server name too long (max 100 characters)' });
+    }
+
+    if (description && description.length > 500) {
+      return res.status(400).json({ error: 'Server description too long (max 500 characters)' });
+    }
+
+    // Générer nom de DB unique pour ce serveur
+    const dbName = `ohkay_server_${Date.now()}`;
+    const inviteCode = Math.random().toString(36).substring(2, 10).toUpperCase();
+
+    // Chiffrer le mot de passe DB avant de le stocker
+    const encryptedPassword = dbManager.encryptPassword(process.env.DB_PASSWORD!);
+
+    // Créer l'entrée dans le registre
+    const serverResult = await dbManager.queryRegistry(
+      `INSERT INTO servers (name, description, owner_id, invite_code, db_name, db_host, db_port, db_user, db_password_encrypted) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) 
+       RETURNING *`,
+      [
+        name, 
+        description || null, 
+        userId, 
+        inviteCode,
+        dbName,
+        process.env.DB_HOST || 'localhost', // TODO: Support multi-host
+        5432,
+        process.env.DB_USER,
+        encryptedPassword
+      ]
     );
 
     const server = serverResult.rows[0];
 
-    // Ajouter le créateur comme membre
-    await query(
+    // Ajouter le créateur comme membre dans registry
+    await dbManager.queryRegistry(
       'INSERT INTO server_members (server_id, user_id) VALUES ($1, $2)',
       [server.id, userId]
     );
 
-    // Créer le rôle @everyone
-    await query(
-      'INSERT INTO roles (server_id, name, permissions, position) VALUES ($1, $2, $3, $4)',
-      [server.id, '@everyone', 0, 0]
+    // TODO: Créer physiquement la base de données PostgreSQL pour ce serveur
+    // Pour l'instant, on utilise server-1-db existante
+    const serverId = server.id;
+
+    // Créer le rôle @everyone dans la DB du serveur
+    const serverPool = await dbManager.getServerDB(serverId);
+    await serverPool.query(
+      'INSERT INTO roles (name, permissions, position, is_default) VALUES ($1, $2, $3, $4)',
+      ['@everyone', 0, 0, true]
     );
 
     // Créer le channel général
-    await query(
-      'INSERT INTO channels (server_id, name, description, type, position, created_by) VALUES ($1, $2, $3, $4, $5, $6)',
-      [server.id, 'general', 'Discussion générale', 'text', 0, userId]
+    await serverPool.query(
+      'INSERT INTO channels (name, description, type, position, created_by) VALUES ($1, $2, $3, $4, $5)',
+      ['general', 'Discussion générale', 'text', 0, userId]
     );
 
-    logger.info('Server created', { serverId: server.id, serverName: name, userId });
+    logger.info('Server created', { serverId: server.id, serverName: name, userId, dbName });
 
     return res.status(201).json({ message: 'Server created', server });
   } catch (error: any) {
-    logger.error('Error creating server', { error: error.message });
+    logger.error('Error creating server', { error: error.message, stack: error.stack });
     return res.status(500).json({ error: 'Failed to create server' });
   }
 });
 
 // Obtenir les détails d'un serveur
-router.get('/:serverId', authenticateToken, async (req: Request, res: Response) => {
+router.get('/:serverId', authenticateToken, async (req: AuthRequest, res: Response) => {
   try {
-    const { serverId } = req.params;
-    const userId = (req as any).user.userId;
+    const serverId = parseInt(req.params.serverId);
+    const userId = req.user?.id;
 
-    // Vérifier que l'utilisateur est membre
-    const memberCheck = await query(
+    // Vérifier que l'utilisateur est membre (depuis registry)
+    const memberCheck = await dbManager.queryRegistry(
       'SELECT * FROM server_members WHERE server_id = $1 AND user_id = $2',
       [serverId, userId]
     );
@@ -110,19 +136,29 @@ router.get('/:serverId', authenticateToken, async (req: Request, res: Response) 
       return res.status(403).json({ error: 'Not a member of this server' });
     }
 
-    const result = await query(
-      `SELECT s.*, u.username as owner_username
-       FROM servers s
-       LEFT JOIN users u ON s.owner_id = u.id
-       WHERE s.id = $1`,
-      [serverId]
+    const result = await dbManager.queryRegistry(
+      'SELECT * FROM servers WHERE id = $1 AND status = $2',
+      [serverId, 'active']
     );
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Server not found' });
     }
 
-    return res.json({ server: result.rows[0] });
+    const server = result.rows[0];
+
+    // Enrichir avec username du propriétaire
+    const ownerResult = await dbManager.queryAuth(
+      'SELECT username FROM users WHERE id = $1',
+      [server.owner_id]
+    );
+
+    return res.json({ 
+      server: {
+        ...server,
+        ownerUsername: ownerResult.rows[0]?.username
+      }
+    });
   } catch (error: any) {
     logger.error('Error fetching server', { error: error.message });
     return res.status(500).json({ error: 'Failed to fetch server' });
@@ -130,13 +166,13 @@ router.get('/:serverId', authenticateToken, async (req: Request, res: Response) 
 });
 
 // Obtenir les channels d'un serveur
-router.get('/:serverId/channels', authenticateToken, async (req: Request, res: Response) => {
+router.get('/:serverId/channels', authenticateToken, async (req: AuthRequest, res: Response) => {
   try {
-    const { serverId } = req.params;
-    const userId = (req as any).user.userId;
+    const serverId = parseInt(req.params.serverId);
+    const userId = req.user?.id;
 
-    // Vérifier membership
-    const memberCheck = await query(
+    // Vérifier membership (registry)
+    const memberCheck = await dbManager.queryRegistry(
       'SELECT * FROM server_members WHERE server_id = $1 AND user_id = $2',
       [serverId, userId]
     );
@@ -145,17 +181,29 @@ router.get('/:serverId/channels', authenticateToken, async (req: Request, res: R
       return res.status(403).json({ error: 'Not a member of this server' });
     }
 
-    const result = await query(
-      `SELECT c.*, u.username as creator_username
-       FROM channels c
-       LEFT JOIN users u ON c.created_by = u.id
-       WHERE c.server_id = $1
-       ORDER BY c.position ASC`,
-      [serverId]
+    // Récupérer channels depuis la DB du serveur
+    const result = await dbManager.queryServer(
+      serverId,
+      'SELECT * FROM channels ORDER BY position ASC',
+      []
     );
 
-    logger.info('Server channels fetched', { serverId, count: result.rows.length, userId });
-    return res.json({ channels: result.rows });
+    // Enrichir avec username du créateur
+    const channels = await Promise.all(
+      result.rows.map(async (channel: any) => {
+        const userResult = await dbManager.queryAuth(
+          'SELECT username FROM users WHERE id = $1',
+          [channel.created_by]
+        );
+        return {
+          ...channel,
+          creatorUsername: userResult.rows[0]?.username
+        };
+      })
+    );
+
+    logger.info('Server channels fetched', { serverId, count: channels.length, userId });
+    return res.json({ channels });
   } catch (error: any) {
     logger.error('Error fetching server channels', { error: error.message });
     return res.status(500).json({ error: 'Failed to fetch channels' });
@@ -163,13 +211,13 @@ router.get('/:serverId/channels', authenticateToken, async (req: Request, res: R
 });
 
 // Obtenir les membres d'un serveur
-router.get('/:serverId/members', authenticateToken, async (req: Request, res: Response) => {
+router.get('/:serverId/members', authenticateToken, async (req: AuthRequest, res: Response) => {
   try {
-    const { serverId } = req.params;
-    const userId = (req as any).user.userId;
+    const serverId = parseInt(req.params.serverId);
+    const userId = req.user?.id;
 
-    // Vérifier membership
-    const memberCheck = await query(
+    // Vérifier membership (registry)
+    const memberCheck = await dbManager.queryRegistry(
       'SELECT * FROM server_members WHERE server_id = $1 AND user_id = $2',
       [serverId, userId]
     );
@@ -178,17 +226,39 @@ router.get('/:serverId/members', authenticateToken, async (req: Request, res: Re
       return res.status(403).json({ error: 'Not a member of this server' });
     }
 
-    const result = await query(
-      `SELECT u.id, u.username, u.display_name, u.avatar_url, u.status,
-              sm.nickname, sm.joined_at
-       FROM users u
-       INNER JOIN server_members sm ON u.id = sm.user_id
-       WHERE sm.server_id = $1
-       ORDER BY u.username ASC`,
+    // Récupérer les membres depuis registry
+    const membersResult = await dbManager.queryRegistry(
+      'SELECT user_id, nickname, joined_at FROM server_members WHERE server_id = $1 ORDER BY joined_at ASC',
       [serverId]
     );
 
-    return res.json({ members: result.rows });
+    // Enrichir avec les infos utilisateur depuis auth_db
+    const members = await Promise.all(
+      membersResult.rows.map(async (member: any) => {
+        const userResult = await dbManager.queryAuth(
+          `SELECT u.id, u.username, u.status, u.last_seen, p.display_name, p.avatar_url
+           FROM users u
+           LEFT JOIN user_profiles p ON u.id = p.user_id
+           WHERE u.id = $1`,
+          [member.user_id]
+        );
+
+        const user = userResult.rows[0] || {};
+
+        return {
+          id: user.id,
+          username: user.username,
+          displayName: user.display_name || user.username,
+          avatarUrl: user.avatar_url,
+          status: user.status,
+          lastSeen: user.last_seen,
+          nickname: member.nickname,
+          joinedAt: member.joined_at
+        };
+      })
+    );
+
+    return res.json({ members });
   } catch (error: any) {
     logger.error('Error fetching server members', { error: error.message });
     return res.status(500).json({ error: 'Failed to fetch members' });
@@ -196,54 +266,49 @@ router.get('/:serverId/members', authenticateToken, async (req: Request, res: Re
 });
 
 // Rejoindre un serveur via code d'invitation
-router.post('/join/:inviteCode', authenticateToken, async (req: Request, res: Response) => {
+router.post('/join/:inviteCode', authenticateToken, async (req: AuthRequest, res: Response) => {
   try {
     const { inviteCode } = req.params;
-    const userId = (req as any).user.userId;
+    const userId = req.user?.id;
 
-    // Vérifier l'invitation
-    const inviteResult = await query(
-      `SELECT * FROM invites 
-       WHERE code = $1 
-       AND (expires_at IS NULL OR expires_at > NOW())
-       AND (max_uses = 0 OR current_uses < max_uses)`,
-      [inviteCode]
+    // Vérifier l'invitation dans la DB du serveur
+    // Pour simplifier, chercher d'abord le serveur par invite_code dans registry
+    const serverResult = await dbManager.queryRegistry(
+      'SELECT id FROM servers WHERE invite_code = $1 AND status = $2',
+      [inviteCode, 'active']
     );
 
-    if (inviteResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Invalid or expired invite code' });
+    if (serverResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Invalid invite code' });
     }
 
-    const invite = inviteResult.rows[0];
+    const serverId = serverResult.rows[0].id;
 
     // Vérifier si déjà membre
-    const memberCheck = await query(
+    const memberCheck = await dbManager.queryRegistry(
       'SELECT * FROM server_members WHERE server_id = $1 AND user_id = $2',
-      [invite.server_id, userId]
+      [serverId, userId]
     );
 
     if (memberCheck.rows.length > 0) {
       return res.status(400).json({ error: 'Already a member of this server' });
     }
 
-    // Ajouter comme membre
-    await query(
+    // Ajouter comme membre dans registry
+    await dbManager.queryRegistry(
       'INSERT INTO server_members (server_id, user_id) VALUES ($1, $2)',
-      [invite.server_id, userId]
-    );
-
-    // Incrémenter le compteur d'utilisations
-    await query(
-      'UPDATE invites SET current_uses = current_uses + 1 WHERE id = $1',
-      [invite.id]
+      [serverId, userId]
     );
 
     // Récupérer les infos du serveur
-    const serverResult = await query('SELECT * FROM servers WHERE id = $1', [invite.server_id]);
+    const finalServerResult = await dbManager.queryRegistry(
+      'SELECT * FROM servers WHERE id = $1',
+      [serverId]
+    );
 
-    logger.info('User joined server via invite', { serverId: invite.server_id, userId, inviteCode });
+    logger.info('User joined server via invite', { serverId, userId, inviteCode });
 
-    return res.json({ message: 'Joined server successfully', server: serverResult.rows[0] });
+    return res.json({ message: 'Joined server successfully', server: finalServerResult.rows[0] });
   } catch (error: any) {
     logger.error('Error joining server', { error: error.message });
     return res.status(500).json({ error: 'Failed to join server' });
@@ -251,14 +316,17 @@ router.post('/join/:inviteCode', authenticateToken, async (req: Request, res: Re
 });
 
 // Créer une invitation pour un serveur
-router.post('/:serverId/invites', authenticateToken, async (req: Request, res: Response) => {
+router.post('/:serverId/invites', authenticateToken, async (req: AuthRequest, res: Response) => {
   try {
-    const { serverId } = req.params;
-    const userId = (req as any).user.userId;
+    const serverId = parseInt(req.params.serverId);
+    const userId = req.user?.id;
     const { maxUses, expiresInHours } = req.body;
 
     // Vérifier ownership ou permissions
-    const serverResult = await query('SELECT * FROM servers WHERE id = $1', [serverId]);
+    const serverResult = await dbManager.queryRegistry(
+      'SELECT * FROM servers WHERE id = $1',
+      [serverId]
+    );
     
     if (serverResult.rows.length === 0) {
       return res.status(404).json({ error: 'Server not found' });
@@ -277,9 +345,11 @@ router.post('/:serverId/invites', authenticateToken, async (req: Request, res: R
       ? new Date(Date.now() + expiresInHours * 60 * 60 * 1000).toISOString()
       : null;
 
-    const result = await query(
-      'INSERT INTO invites (server_id, code, created_by, max_uses, expires_at) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-      [serverId, code, userId, maxUses || 0, expiresAt]
+    // Créer l'invitation dans la DB du serveur
+    const result = await dbManager.queryServer(
+      serverId,
+      'INSERT INTO invites (code, created_by, max_uses, expires_at) VALUES ($1, $2, $3, $4) RETURNING *',
+      [code, userId, maxUses || 0, expiresAt]
     );
 
     logger.info('Invite created', { serverId, code, userId });

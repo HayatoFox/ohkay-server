@@ -6,10 +6,11 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
 import logger from './utils/logger';
-import pool from './utils/database';
+import { dbManager } from './utils/database';
 import authRoutes from './routes/auth';
 import channelRoutes from './routes/channels';
 import serverRoutes from './routes/servers';
+import dmRoutes from './routes/dms';
 import { setupSocketHandlers } from './socket/handlers';
 
 // Load environment variables
@@ -70,6 +71,7 @@ app.get('/health', (_req: Request, res: Response) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/channels', channelRoutes);
 app.use('/api/servers', serverRoutes);
+app.use('/api/dms', dmRoutes);
 
 // 404 handler
 app.use((req: Request, res: Response) => {
@@ -103,8 +105,8 @@ const shutdown = async () => {
     logger.info('Socket.io server closed');
   });
   
-  await pool.end();
-  logger.info('Database pool closed');
+  await dbManager.closeAll();
+  logger.info('All database pools closed');
   
   process.exit(0);
 };
@@ -115,9 +117,13 @@ process.on('SIGINT', shutdown);
 // Start server
 const startServer = async () => {
   try {
-    // Test database connection
-    await pool.query('SELECT NOW()');
-    logger.info('Database connection verified');
+    // Test database connections
+    const health = await dbManager.healthCheck();
+    logger.info('Database health check', health);
+    
+    if (!health.auth_db || !health.dm_db || !health.registry_db) {
+      throw new Error('One or more databases are not healthy');
+    }
     
     server.listen(PORT, () => {
       logger.info(`Ohkay Server started`, {

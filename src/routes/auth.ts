@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { query } from '../utils/database';
+import { dbManager } from '../utils/database';
 import { hashPassword, comparePassword, generateToken, verifyServerPassword } from '../utils/auth';
 import logger from '../utils/logger';
 
@@ -22,7 +22,7 @@ router.post('/register', async (req: Request, res: Response) => {
     }
 
     // Check if username already exists
-    const existingUser = await query('SELECT id FROM users WHERE username = $1', [username]);
+    const existingUser = await dbManager.queryAuth('SELECT id FROM users WHERE username = $1', [username]);
     if (existingUser.rows.length > 0) {
       logger.warn('Registration attempt with existing username', { username });
       return res.status(409).json({ error: 'Username already exists' });
@@ -30,12 +30,19 @@ router.post('/register', async (req: Request, res: Response) => {
 
     // Hash password and create user
     const passwordHash = await hashPassword(password);
-    const result = await query(
-      'INSERT INTO users (username, password_hash, display_name) VALUES ($1, $2, $3) RETURNING id, username, display_name, created_at',
-      [username, passwordHash, displayName || username]
+    const result = await dbManager.queryAuth(
+      'INSERT INTO users (username, password_hash) VALUES ($1, $2) RETURNING id, username, created_at',
+      [username, passwordHash]
     );
 
     const user = result.rows[0];
+
+    // Create profile
+    await dbManager.queryAuth(
+      'INSERT INTO user_profiles (user_id, display_name) VALUES ($1, $2)',
+      [user.id, displayName || username]
+    );
+
     const token = generateToken(user.id, user.username);
 
     logger.info('User registered successfully', { userId: user.id, username: user.username });
@@ -46,7 +53,7 @@ router.post('/register', async (req: Request, res: Response) => {
       user: {
         id: user.id,
         username: user.username,
-        displayName: user.display_name,
+        displayName: displayName || username,
         createdAt: user.created_at,
       },
     });
@@ -72,8 +79,15 @@ router.post('/login', async (req: Request, res: Response) => {
       return res.status(403).json({ error: 'Invalid server password' });
     }
 
-    // Find user
-    const result = await query('SELECT * FROM users WHERE username = $1', [username]);
+    // Find user with profile
+    const result = await dbManager.queryAuth(
+      `SELECT u.*, p.display_name, p.avatar_url 
+       FROM users u 
+       LEFT JOIN user_profiles p ON u.id = p.user_id 
+       WHERE u.username = $1`,
+      [username]
+    );
+    
     if (result.rows.length === 0) {
       logger.warn('Login attempt with non-existent username', { username });
       return res.status(401).json({ error: 'Invalid credentials' });
@@ -89,7 +103,7 @@ router.post('/login', async (req: Request, res: Response) => {
     }
 
     // Update last seen
-    await query('UPDATE users SET last_seen = CURRENT_TIMESTAMP WHERE id = $1', [user.id]);
+    await dbManager.queryAuth('UPDATE users SET last_seen = CURRENT_TIMESTAMP, status = $1 WHERE id = $2', ['online', user.id]);
 
     const token = generateToken(user.id, user.username);
 

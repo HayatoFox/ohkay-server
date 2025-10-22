@@ -1,6 +1,7 @@
-version: '3.8'
-
 services:
+  # ========================================
+  # APPLICATION OHKAY SERVER
+  # ========================================
   app:
     build:
       context: .
@@ -8,22 +9,51 @@ services:
     container_name: ohkay-server
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "8100:8100"
     environment:
       - NODE_ENV=production
-      - PORT=3000
-      - DB_HOST=postgres
-      - DB_PORT=5432
-      - DB_NAME=${DB_NAME:-ohkay}
+      - PORT=8100
+      
+      # Auth Database
+      - AUTH_DB_HOST=auth-db
+      - AUTH_DB_PORT=5432
+      - AUTH_DB_NAME=ohkay_auth
+      
+      # DM Database
+      - DM_DB_HOST=dm-db
+      - DM_DB_PORT=5432
+      - DM_DB_NAME=ohkay_dms
+      
+      # Registry Database
+      - REGISTRY_DB_HOST=registry-db
+      - REGISTRY_DB_PORT=5432
+      - REGISTRY_DB_NAME=ohkay_server_registry
+      
+      # Database Credentials (shared)
       - DB_USER=${DB_USER:-ohkay_user}
       - DB_PASSWORD=${DB_PASSWORD}
+      
+      # Security
       - JWT_SECRET=${JWT_SECRET}
       - SERVER_PASSWORD=${SERVER_PASSWORD}
+      - DB_ENCRYPTION_KEY=${DB_ENCRYPTION_KEY:-change-me-in-production}
+      
+      # Logging
       - LOG_LEVEL=${LOG_LEVEL:-info}
+      
+      # CORS
+      - CORS_ORIGIN=${CORS_ORIGIN:-*}
+      
     volumes:
       - ./logs:/app/logs
     depends_on:
-      postgres:
+      auth-db:
+        condition: service_healthy
+      dm-db:
+        condition: service_healthy
+      registry-db:
+        condition: service_healthy
+      server-1-db:
         condition: service_healthy
     networks:
       - ohkay-network
@@ -33,24 +63,106 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  postgres:
+  # ========================================
+  # AUTH DATABASE - Utilisateurs globaux
+  # ========================================
+  auth-db:
     image: postgres:16-alpine
-    container_name: ohkay-postgres
+    container_name: ohkay-auth-db
     restart: unless-stopped
     environment:
-      - POSTGRES_DB=${DB_NAME:-ohkay}
+      - POSTGRES_DB=ohkay_auth
       - POSTGRES_USER=${DB_USER:-ohkay_user}
       - POSTGRES_PASSWORD=${DB_PASSWORD}
     volumes:
-      - postgres-data:/var/lib/postgresql/data
-      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
-    ports:
-      - "5432:5432"
+      - auth-data:/var/lib/postgresql/data
+      - ./init-scripts/auth.sql:/docker-entrypoint-initdb.d/init.sql
     networks:
       - ohkay-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-ohkay_user}"]
-      interval: 10s
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-ohkay_user} -d ohkay_auth"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ========================================
+  # DM DATABASE - Messages privés
+  # ========================================
+  dm-db:
+    image: postgres:16-alpine
+    container_name: ohkay-dm-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=ohkay_dms
+      - POSTGRES_USER=${DB_USER:-ohkay_user}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+    volumes:
+      - dm-data:/var/lib/postgresql/data
+      - ./init-scripts/dms.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - ohkay-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-ohkay_user} -d ohkay_dms"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ========================================
+  # REGISTRY DATABASE - Registre des serveurs
+  # ========================================
+  registry-db:
+    image: postgres:16-alpine
+    container_name: ohkay-registry-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=ohkay_server_registry
+      - POSTGRES_USER=${DB_USER:-ohkay_user}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+    volumes:
+      - registry-data:/var/lib/postgresql/data
+      - ./init-scripts/registry.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - ohkay-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-ohkay_user} -d ohkay_server_registry"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ========================================
+  # SERVER 1 DATABASE - Premier serveur (exemple)
+  # ========================================
+  server-1-db:
+    image: postgres:16-alpine
+    container_name: ohkay-server-1-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=ohkay_server_1
+      - POSTGRES_USER=${DB_USER:-ohkay_user}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+    volumes:
+      - server-1-data:/var/lib/postgresql/data
+      - ./init-scripts/server_template.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - ohkay-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-ohkay_user} -d ohkay_server_1"]
+      interval: 5s
       timeout: 5s
       retries: 5
     logging:
@@ -64,4 +176,7 @@ networks:
     driver: bridge
 
 volumes:
-  postgres-data:
+  auth-data:
+  dm-data:
+  registry-data:
+  server-1-data:

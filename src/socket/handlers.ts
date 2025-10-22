@@ -1,6 +1,6 @@
 import { Server, Socket } from 'socket.io';
 import { verifyToken } from '../utils/auth';
-import { query } from '../utils/database';
+import { dbManager } from '../utils/database';
 import logger from '../utils/logger';
 
 interface AuthenticatedSocket extends Socket {
@@ -38,7 +38,7 @@ export const setupSocketHandlers = (io: Server) => {
 
     // Store session
     try {
-      await query(
+      await dbManager.queryAuth(
         'INSERT INTO sessions (user_id, socket_id, ip_address) VALUES ($1, $2, $3)',
         [socket.userId, socket.id, socket.handshake.address]
       );
@@ -53,7 +53,7 @@ export const setupSocketHandlers = (io: Server) => {
     socket.on('join_server', async (serverId: number) => {
       try {
         // Vérifier que l'utilisateur est membre
-        const memberCheck = await query(
+        const memberCheck = await dbManager.queryRegistry(
           'SELECT * FROM server_members WHERE server_id = $1 AND user_id = $2',
           [serverId, socket.userId]
         );
@@ -139,7 +139,7 @@ export const setupSocketHandlers = (io: Server) => {
     });
 
     // Handle sending a message
-    socket.on('send_message', async (data: { channelId: number; content: string; serverId?: number }): Promise<void> => {
+    socket.on('send_message', async (data: { channelId: number; content: string; serverId: number }): Promise<void> => {
       try {
         const { channelId, content, serverId } = data;
 
@@ -148,20 +148,25 @@ export const setupSocketHandlers = (io: Server) => {
           return;
         }
 
-        // Vérifier l'accès au channel (si serverId fourni)
-        if (serverId) {
-          const memberCheck = await query(
-            'SELECT * FROM server_members WHERE server_id = $1 AND user_id = $2',
-            [serverId, socket.userId]
-          );
-
-          if (memberCheck.rows.length === 0) {
-            socket.emit('error', { message: 'Not authorized to send messages in this server' });
-            return;
-          }
+        if (!serverId) {
+          socket.emit('error', { message: 'Server ID is required' });
+          return;
         }
 
-        const result = await query(
+        // Vérifier l'accès au serveur
+        const memberCheck = await dbManager.queryRegistry(
+          'SELECT * FROM server_members WHERE server_id = $1 AND user_id = $2',
+          [serverId, socket.userId]
+        );
+
+        if (memberCheck.rows.length === 0) {
+          socket.emit('error', { message: 'Not authorized to send messages in this server' });
+          return;
+        }
+
+        // Insérer le message dans la DB du serveur
+        const result = await dbManager.queryServer(
+          serverId,
           `INSERT INTO messages (channel_id, user_id, content) 
            VALUES ($1, $2, $3) 
            RETURNING id, channel_id, user_id, content, created_at`,
@@ -169,8 +174,13 @@ export const setupSocketHandlers = (io: Server) => {
         );
 
         const message = result.rows[0];
-        const userResult = await query(
-          'SELECT username, display_name, avatar_url FROM users WHERE id = $1',
+        
+        // Récupérer les infos utilisateur depuis auth_db
+        const userResult = await dbManager.queryAuth(
+          `SELECT u.username, p.display_name, p.avatar_url
+           FROM users u
+           LEFT JOIN user_profiles p ON u.id = p.user_id
+           WHERE u.id = $1`,
           [socket.userId]
         );
 
@@ -193,7 +203,7 @@ export const setupSocketHandlers = (io: Server) => {
       }
     });
 
-    // Handle private messages
+    // Handle private messages (DMs)
     socket.on('send_private_message', async (data: { recipientId: number; content: string }): Promise<void> => {
       try {
         const { recipientId, content } = data;
@@ -203,31 +213,48 @@ export const setupSocketHandlers = (io: Server) => {
           return;
         }
 
-        const result = await query(
-          `INSERT INTO messages (user_id, recipient_id, content, is_private) 
-           VALUES ($1, $2, $3, TRUE) 
-           RETURNING id, user_id, recipient_id, content, created_at`,
-          [socket.userId, recipientId, content]
+        // 1. Récupérer ou créer la conversation DM
+        const convResult = await dbManager.queryDM(
+          'SELECT get_or_create_conversation($1, $2) as conversation_id',
+          [socket.userId, recipientId]
+        );
+
+        const conversationId = convResult.rows[0].conversation_id;
+
+        // 2. Insérer le message dans dm_messages
+        const result = await dbManager.queryDM(
+          `INSERT INTO dm_messages (conversation_id, sender_id, content) 
+           VALUES ($1, $2, $3) 
+           RETURNING id, conversation_id, sender_id, content, created_at`,
+          [conversationId, socket.userId, content]
         );
 
         const message = result.rows[0];
-        const userResult = await query(
-          'SELECT username, display_name, avatar_url FROM users WHERE id = $1',
+        
+        // 3. Récupérer les infos utilisateur depuis auth_db
+        const userResult = await dbManager.queryAuth(
+          `SELECT u.username, p.display_name, p.avatar_url
+           FROM users u
+           LEFT JOIN user_profiles p ON u.id = p.user_id
+           WHERE u.id = $1`,
           [socket.userId]
         );
 
         const fullMessage = {
           ...message,
-          ...userResult.rows[0],
+          senderUsername: userResult.rows[0]?.username,
+          senderDisplayName: userResult.rows[0]?.display_name,
+          senderAvatarUrl: userResult.rows[0]?.avatar_url,
         };
 
         logger.info('Private message sent', { 
-          messageId: message.id, 
+          messageId: message.id,
+          conversationId,
           senderId: socket.userId, 
           recipientId 
         });
 
-        // Send to both sender and recipient
+        // 4. Émettre vers les deux utilisateurs
         socket.emit('new_private_message', fullMessage);
         io.to(`user:${recipientId}`).emit('new_private_message', fullMessage);
       } catch (error: any) {
@@ -253,7 +280,7 @@ export const setupSocketHandlers = (io: Server) => {
       });
 
       try {
-        await query('DELETE FROM sessions WHERE socket_id = $1', [socket.id]);
+        await dbManager.queryAuth('DELETE FROM sessions WHERE socket_id = $1', [socket.id]);
       } catch (error: any) {
         logger.error('Failed to remove session', { error: error.message });
       }

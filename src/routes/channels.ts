@@ -1,57 +1,22 @@
-import { Router, Request, Response } from 'express';
-import { query } from '../utils/database';
-import { verifyToken } from '../utils/auth';
+import { Router, Response } from 'express';
+import { dbManager } from '../utils/database';
+import { authenticateToken, AuthRequest } from '../utils/auth';
 import logger from '../utils/logger';
 
 const router = Router();
 
-// Middleware to verify JWT token
-const authenticateToken = (req: Request, res: Response, next: Function): void => {
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
-
-  if (!token) {
-    res.status(401).json({ error: 'Access token required' });
-    return;
-  }
-
-  const decoded = verifyToken(token);
-  if (!decoded) {
-    res.status(403).json({ error: 'Invalid or expired token' });
-    return;
-  }
-
-  (req as any).user = decoded;
-  next();
-};
-
-// Get all channels
-router.get('/', authenticateToken, async (req: Request, res: Response) => {
+// Get all channels (requires serverId in query)
+router.get('/', authenticateToken, async (req: AuthRequest, res: Response) => {
   try {
-    const result = await query(
-      'SELECT c.*, u.username as creator_username FROM channels c LEFT JOIN users u ON c.created_by = u.id ORDER BY c.created_at'
-    );
+    const serverId = parseInt(req.query.serverId as string);
+    const userId = req.user?.id;
 
-    logger.info('Channels fetched', { count: result.rows.length, userId: (req as any).user.userId });
-    res.json({ channels: result.rows });
-  } catch (error: any) {
-    logger.error('Error fetching channels', { error: error.message });
-    res.status(500).json({ error: 'Failed to fetch channels' });
-  }
-});
-
-// Create new channel (now requires serverId)
-router.post('/', authenticateToken, async (req: Request, res: Response) => {
-  try {
-    const { serverId, name, description, type, position } = req.body;
-    const userId = (req as any).user.userId;
-
-    if (!serverId || !name) {
-      return res.status(400).json({ error: 'Server ID and channel name are required' });
+    if (!serverId) {
+      return res.status(400).json({ error: 'Server ID is required' });
     }
 
     // Vérifier que l'utilisateur est membre du serveur
-    const memberCheck = await query(
+    const memberCheck = await dbManager.queryRegistry(
       'SELECT * FROM server_members WHERE server_id = $1 AND user_id = $2',
       [serverId, userId]
     );
@@ -60,16 +25,74 @@ router.post('/', authenticateToken, async (req: Request, res: Response) => {
       return res.status(403).json({ error: 'Not a member of this server' });
     }
 
-    // Vérifier ownership pour créer des channels (simplif ié pour l'instant)
-    const serverCheck = await query('SELECT * FROM servers WHERE id = $1 AND owner_id = $2', [serverId, userId]);
+    // Récupérer les channels depuis la DB du serveur
+    const result = await dbManager.queryServer(
+      serverId,
+      'SELECT * FROM channels ORDER BY position ASC',
+      []
+    );
+
+    // Enrichir avec les usernames depuis auth_db
+    const channels = await Promise.all(
+      result.rows.map(async (channel: any) => {
+        const userResult = await dbManager.queryAuth(
+          'SELECT username FROM users WHERE id = $1',
+          [channel.created_by]
+        );
+        return {
+          ...channel,
+          creatorUsername: userResult.rows[0]?.username,
+        };
+      })
+    );
+
+    logger.info('Channels fetched', { count: channels.length, serverId, userId });
+    return res.json({ channels });
+  } catch (error: any) {
+    logger.error('Error fetching channels', { error: error.message });
+    return res.status(500).json({ error: 'Failed to fetch channels' });
+  }
+});
+
+// Create new channel
+router.post('/', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const { serverId, name, description, type, position } = req.body;
+    const userId = req.user?.id;
+
+    if (!serverId || !name) {
+      return res.status(400).json({ error: 'Server ID and channel name are required' });
+    }
+
+    if (name.length > 100) {
+      return res.status(400).json({ error: 'Channel name too long (max 100 characters)' });
+    }
+
+    // Vérifier que l'utilisateur est membre du serveur
+    const memberCheck = await dbManager.queryRegistry(
+      'SELECT * FROM server_members WHERE server_id = $1 AND user_id = $2',
+      [serverId, userId]
+    );
+
+    if (memberCheck.rows.length === 0) {
+      return res.status(403).json({ error: 'Not a member of this server' });
+    }
+
+    // Vérifier ownership pour créer des channels
+    const serverCheck = await dbManager.queryRegistry(
+      'SELECT * FROM servers WHERE id = $1 AND owner_id = $2',
+      [serverId, userId]
+    );
     
     if (serverCheck.rows.length === 0) {
       return res.status(403).json({ error: 'Only server owner can create channels' });
     }
 
-    const result = await query(
-      'INSERT INTO channels (server_id, name, description, type, position, created_by) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
-      [serverId, name, description || null, type || 'text', position || 0, userId]
+    // Créer le channel dans la DB du serveur
+    const result = await dbManager.queryServer(
+      serverId,
+      'INSERT INTO channels (name, description, type, position, created_by) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+      [name, description || null, type || 'text', position || 0, userId]
     );
 
     const channel = result.rows[0];
@@ -83,26 +106,65 @@ router.post('/', authenticateToken, async (req: Request, res: Response) => {
 });
 
 // Get channel messages
-router.get('/:channelId/messages', authenticateToken, async (req: Request, res: Response) => {
+router.get('/:channelId/messages', authenticateToken, async (req: AuthRequest, res: Response) => {
   try {
-    const { channelId } = req.params;
+    const channelId = parseInt(req.params.channelId);
+    const serverId = parseInt(req.query.serverId as string);
     const limit = parseInt(req.query.limit as string) || 50;
+    const userId = req.user?.id;
 
-    const result = await query(
-      `SELECT m.*, u.username, u.display_name, u.avatar_url 
+    if (!serverId) {
+      return res.status(400).json({ error: 'Server ID is required' });
+    }
+
+    // Vérifier que l'utilisateur est membre du serveur
+    const memberCheck = await dbManager.queryRegistry(
+      'SELECT * FROM server_members WHERE server_id = $1 AND user_id = $2',
+      [serverId, userId]
+    );
+
+    if (memberCheck.rows.length === 0) {
+      return res.status(403).json({ error: 'Not a member of this server' });
+    }
+
+    // Récupérer les messages depuis la DB du serveur
+    const result = await dbManager.queryServer(
+      serverId,
+      `SELECT m.* 
        FROM messages m 
-       JOIN users u ON m.user_id = u.id 
        WHERE m.channel_id = $1 AND m.deleted_at IS NULL 
        ORDER BY m.created_at DESC 
        LIMIT $2`,
       [channelId, limit]
     );
 
-    logger.debug('Messages fetched', { channelId, count: result.rows.length });
-    res.json({ messages: result.rows.reverse() });
+    // Enrichir avec les infos utilisateur depuis auth_db
+    const messages = await Promise.all(
+      result.rows.map(async (msg: any) => {
+        const userResult = await dbManager.queryAuth(
+          `SELECT u.username, p.display_name, p.avatar_url
+           FROM users u
+           LEFT JOIN user_profiles p ON u.id = p.user_id
+           WHERE u.id = $1`,
+          [msg.user_id]
+        );
+
+        const user = userResult.rows[0] || {};
+
+        return {
+          ...msg,
+          username: user.username,
+          displayName: user.display_name,
+          avatarUrl: user.avatar_url,
+        };
+      })
+    );
+
+    logger.debug('Messages fetched', { channelId, serverId, count: messages.length });
+    return res.json({ messages: messages.reverse() });
   } catch (error: any) {
     logger.error('Error fetching messages', { error: error.message });
-    res.status(500).json({ error: 'Failed to fetch messages' });
+    return res.status(500).json({ error: 'Failed to fetch messages' });
   }
 });
 
