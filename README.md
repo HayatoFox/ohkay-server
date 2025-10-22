@@ -35,7 +35,7 @@ A self-hosted Discord alternative built with Node.js, TypeScript, Socket.io, and
 ### 1. Clone the repository
 
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/HayatoFox/ohkay-server.git
 cd ohkay-server
 ```
 
