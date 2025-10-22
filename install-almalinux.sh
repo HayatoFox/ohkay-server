@@ -261,6 +261,20 @@ setup_directories() {
         "Échec création répertoires"
 }
 
+# Création du dossier logs (après clone)
+setup_logs_directory() {
+    print_header "Configuration du système de logs"
+    
+    print_info "Création du répertoire logs..."
+    mkdir -p "$INSTALL_DIR/logs"
+    chmod 777 "$INSTALL_DIR/logs"
+    
+    verify_step "Logs directory" \
+        "test -d $INSTALL_DIR/logs" \
+        "Répertoire logs créé avec permissions d'écriture" \
+        "Échec création répertoire logs"
+}
+
 # Clone du repository
 clone_repository() {
     print_header "Téléchargement du code source"
@@ -699,6 +713,7 @@ main() {
     configure_selinux
     setup_directories
     clone_repository
+    setup_logs_directory
     generate_secrets
     create_env_file
     create_docker_files

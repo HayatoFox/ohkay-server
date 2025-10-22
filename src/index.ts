@@ -125,9 +125,11 @@ const startServer = async () => {
       throw new Error('One or more databases are not healthy');
     }
     
-    server.listen(PORT, () => {
+    // Écouter sur 0.0.0.0 pour accepter les connexions externes
+    server.listen(PORT, '0.0.0.0', () => {
       logger.info(`Ohkay Server started`, {
         port: PORT,
+        host: '0.0.0.0',
         env: process.env.NODE_ENV || 'development',
         nodeVersion: process.version,
       });
