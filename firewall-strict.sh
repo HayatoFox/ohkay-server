@@ -104,14 +104,18 @@ sudo firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 100 -j DROP
 # ============================================================================
 echo "🛡️  Application règles de sécurité avancées..."
 
-# Bloquer les scans de ports
-sudo firewall-cmd --permanent --add-rich-rule='rule protocol value=tcp tcp-flags FIN,SYN,RST,PSH,ACK,URG mask=FIN,SYN,RST,PSH,ACK,URG drop'
+# Bloquer les scans de ports (XMAS scan)
+sudo firewall-cmd --permanent --direct --add-rule ipv4 filter INPUT 0 -p tcp --tcp-flags FIN,SYN,RST,PSH,ACK,URG FIN,SYN,RST,PSH,ACK,URG -j DROP
 
 # Bloquer les paquets NULL
-sudo firewall-cmd --permanent --add-rich-rule='rule protocol value=tcp tcp-flags FIN,SYN,RST,PSH,ACK,URG mask=NONE drop'
+sudo firewall-cmd --permanent --direct --add-rule ipv4 filter INPUT 0 -p tcp --tcp-flags FIN,SYN,RST,PSH,ACK,URG NONE -j DROP
 
-# Protection DDoS basique
-sudo firewall-cmd --permanent --add-rich-rule='rule protocol value=tcp tcp-flags SYN limit value=10/s accept'
+# Bloquer FIN scan
+sudo firewall-cmd --permanent --direct --add-rule ipv4 filter INPUT 0 -p tcp --tcp-flags FIN,SYN FIN,SYN -j DROP
+
+# Bloquer SYN flood (protection DDoS basique)
+sudo firewall-cmd --permanent --direct --add-rule ipv4 filter INPUT 0 -p tcp --syn -m limit --limit 10/s --limit-burst 20 -j ACCEPT
+sudo firewall-cmd --permanent --direct --add-rule ipv4 filter INPUT 1 -p tcp --syn -j DROP
 
 # Bloquer ping (ICMP echo request)
 sudo firewall-cmd --permanent --add-icmp-block=echo-request
