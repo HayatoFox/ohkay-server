@@ -17,6 +17,7 @@ NC='\033[0m' # No Color
 INSTALL_DIR="/opt/ohkay-server"
 BACKUP_DIR="/opt/backups/ohkay"
 SERVICE_NAME="ohkay-server"
+REPO_URL="https://github.com/HayatoFox/ohkay-server.git"
 
 # Fonctions d'affichage
 print_header() {
@@ -49,6 +50,37 @@ check_root() {
     fi
 }
 
+# Fonction de vérification avec sortie
+verify_step() {
+    local step_name=$1
+    local check_command=$2
+    local success_msg=$3
+    local fail_msg=$4
+    
+    print_info "Vérification: $step_name..."
+    if eval "$check_command"; then
+        print_success "$success_msg"
+        return 0
+    else
+        print_error "$fail_msg"
+        return 1
+    fi
+}
+
+# Installation de Git
+install_git() {
+    print_header "Installation de Git"
+    
+    if command -v git &> /dev/null; then
+        print_warning "Git est déjà installé"
+        git --version
+    else
+        print_info "Installation de Git..."
+        dnf install -y git
+        verify_step "Git" "command -v git &> /dev/null" "Git installé: $(git --version)" "Échec installation Git"
+    fi
+}
+
 # Installation de Docker
 install_docker() {
     print_header "Installation de Docker"
@@ -70,8 +102,9 @@ install_docker() {
         systemctl start docker
         systemctl enable docker
         
-        print_success "Docker installé avec succès"
-        docker --version
+        verify_step "Docker" "docker --version && systemctl is-active docker" \
+            "Docker installé et actif: $(docker --version)" \
+            "Docker non fonctionnel"
     fi
 }
 
@@ -79,14 +112,122 @@ install_docker() {
 configure_firewall() {
     print_header "Configuration du pare-feu"
     
-    if systemctl is-active --quiet firewalld; then
-        print_info "Ouverture du port 3000..."
-        firewall-cmd --permanent --add-port=3000/tcp
-        firewall-cmd --reload
-        print_success "Pare-feu configuré (port 3000 ouvert)"
-    else
-        print_warning "firewalld n'est pas actif"
+    # Installer firewalld si absent
+    if ! command -v firewall-cmd &> /dev/null; then
+        print_info "Installation de firewalld..."
+        dnf install -y firewalld
+        systemctl enable firewalld
+        systemctl start firewalld
     fi
+    
+    verify_step "firewalld" "systemctl is-active firewalld" \
+        "firewalld actif" \
+        "firewalld non actif"
+    
+    echo ""
+    print_info "Choisissez le mode de sécurité du pare-feu:"
+    echo ""
+    echo "  1) Standard - Recommandé (SSH + port 8100 avec rate limiting)"
+    echo "  2) Strict   - Sécurité maximale (bloque tout sauf explicite)"
+    echo ""
+    read -p "Votre choix (1/2): " firewall_choice
+    
+    case $firewall_choice in
+        2)
+            print_info "Configuration du pare-feu en mode STRICT..."
+            configure_firewall_strict
+            ;;
+        *)
+            print_info "Configuration du pare-feu en mode STANDARD..."
+            configure_firewall_standard
+            ;;
+    esac
+}
+
+# Configuration pare-feu standard
+configure_firewall_standard() {
+    # SSH avec rate limiting
+    firewall-cmd --permanent --add-service=ssh
+    firewall-cmd --permanent --add-rich-rule='rule service name=ssh limit value=3/m accept'
+    
+    # Port 8100 avec rate limiting
+    firewall-cmd --permanent --add-port=8100/tcp
+    firewall-cmd --permanent --add-rich-rule='rule port port=8100 protocol=tcp limit value=100/m accept'
+    
+    # DNS
+    firewall-cmd --permanent --add-service=dns
+    
+    # Trafic sortant HTTP/HTTPS
+    firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 0 -p tcp --dport 80 -j ACCEPT
+    firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 0 -p tcp --dport 443 -j ACCEPT
+    
+    # Reload
+    firewall-cmd --reload
+    
+    verify_step "Firewall standard" \
+        "firewall-cmd --list-ports | grep -q 8100" \
+        "Pare-feu configuré: port 8100 ouvert avec rate limiting" \
+        "Échec configuration pare-feu"
+    
+    echo ""
+    print_info "Règles actives:"
+    firewall-cmd --list-all
+}
+
+# Configuration pare-feu strict
+configure_firewall_strict() {
+    # Reset
+    firewall-cmd --complete-reload
+    
+    # SSH avec rate limiting
+    firewall-cmd --permanent --zone=public --add-service=ssh
+    firewall-cmd --permanent --zone=public --add-rich-rule='rule service name=ssh limit value=3/m accept'
+    
+    # Port 8100 avec rate limiting
+    firewall-cmd --permanent --zone=public --add-port=8100/tcp
+    firewall-cmd --permanent --zone=public --add-rich-rule='rule port port=8100 protocol=tcp limit value=100/m accept'
+    
+    # DNS
+    firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 0 -p udp --dport 53 -j ACCEPT
+    firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 0 -p tcp --dport 53 -j ACCEPT
+    
+    # HTTP/HTTPS sortant
+    firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 0 -p tcp --dport 80 -j ACCEPT
+    firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 0 -p tcp --dport 443 -j ACCEPT
+    
+    # NTP
+    firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 0 -p udp --dport 123 -j ACCEPT
+    
+    # Connexions établies
+    firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 0 -m state --state ESTABLISHED,RELATED -j ACCEPT
+    
+    # Loopback
+    firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 0 -o lo -j ACCEPT
+    
+    # Bloquer le reste (mode strict)
+    firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 100 -j DROP
+    
+    # Sécurité avancée
+    firewall-cmd --permanent --add-rich-rule='rule protocol value=tcp tcp-flags FIN,SYN,RST,PSH,ACK,URG mask=FIN,SYN,RST,PSH,ACK,URG drop'
+    firewall-cmd --permanent --add-rich-rule='rule protocol value=tcp tcp-flags FIN,SYN,RST,PSH,ACK,URG mask=NONE drop'
+    firewall-cmd --permanent --add-rich-rule='rule protocol value=tcp tcp-flags SYN limit value=10/s accept'
+    firewall-cmd --permanent --add-icmp-block=echo-request
+    
+    # Logging
+    firewall-cmd --permanent --set-log-denied=all
+    
+    # Reload
+    firewall-cmd --reload
+    
+    verify_step "Firewall strict" \
+        "firewall-cmd --list-ports | grep -q 8100" \
+        "Pare-feu STRICT configuré: sécurité maximale activée" \
+        "Échec configuration pare-feu strict"
+    
+    echo ""
+    print_warning "Mode STRICT activé: tout le trafic non explicitement autorisé est bloqué"
+    print_info "Règles actives:"
+    firewall-cmd --list-all
 }
 
 # Configuration SELinux
@@ -105,31 +246,114 @@ configure_selinux() {
     fi
 }
 
-# Création de l'utilisateur et des répertoires
+# Configuration des répertoires
 setup_directories() {
     print_header "Configuration des répertoires"
     
     print_info "Création du répertoire d'installation..."
     mkdir -p "$INSTALL_DIR"
-    mkdir -p "$INSTALL_DIR/logs"
     mkdir -p "$BACKUP_DIR"
     
     print_info "Configuration des permissions..."
     chmod 755 "$INSTALL_DIR"
-    chmod 755 "$INSTALL_DIR/logs"
     
-    print_success "Répertoires créés"
+    verify_step "Répertoires" \
+        "test -d $INSTALL_DIR && test -d $BACKUP_DIR" \
+        "Répertoires créés: $INSTALL_DIR" \
+        "Échec création répertoires"
+}
+
+# Clone du repository
+clone_repository() {
+    print_header "Téléchargement du code source"
+    
+    if [ -d "$INSTALL_DIR/.git" ]; then
+        print_warning "Repository déjà cloné, mise à jour..."
+        cd "$INSTALL_DIR"
+        git pull
+    else
+        print_info "Clonage depuis GitHub..."
+        git clone "$REPO_URL" "$INSTALL_DIR"
+    fi
+    
+    cd "$INSTALL_DIR"
+    
+    verify_step "Repository" \
+        "test -f $INSTALL_DIR/package.json && test -f $INSTALL_DIR/docker-compose.yml" \
+        "Code source téléchargé avec succès" \
+        "Échec téléchargement du code"
 }
 
 # Génération des secrets
 generate_secrets() {
     print_header "Génération des secrets"
     
-    JWT_SECRET=$(openssl rand -base64 32)
-    DB_PASSWORD=$(openssl rand -base64 24)
-    SERVER_PASSWORD=$(openssl rand -base64 16)
+    # Génération automatique de secrets forts
+    JWT_SECRET=$(openssl rand -base64 64 | tr -d '\n')
+    DB_PASSWORD=$(openssl rand -base64 48 | tr -d '\n')
+    DB_ENCRYPTION_KEY=$(openssl rand -base64 64 | tr -d '\n')
     
-    print_success "Secrets générés"
+    # Demander le mot de passe serveur à l'utilisateur
+    echo ""
+    print_info "Configuration du mot de passe serveur"
+    print_warning "Ce mot de passe sera requis pour créer un serveur dans l'application"
+    echo ""
+    
+    # Proposer la génération automatique
+    read -p "  Voulez-vous générer un mot de passe fort aléatoire? (O/n): " generate_choice
+    
+    if [[ ! "$generate_choice" =~ ^[Nn]$ ]]; then
+        # Générer un mot de passe fort lisible
+        GENERATED_PASSWORD=$(openssl rand -base64 24 | tr -d '\n' | head -c 20)
+        echo ""
+        print_success "Mot de passe généré (20 caractères):"
+        echo ""
+        echo -e "  ${GREEN}${GENERATED_PASSWORD}${NC}"
+        echo ""
+        print_warning "IMPORTANT: Copiez ce mot de passe maintenant!"
+        echo ""
+        read -p "  Appuyez sur Entrée après avoir copié le mot de passe..."
+        
+        SERVER_PASSWORD="$GENERATED_PASSWORD"
+        print_success "Mot de passe fort configuré automatiquement"
+    else
+        # Mode manuel
+        echo ""
+        while true; do
+            read -sp "  Entrez le mot de passe serveur: " SERVER_PASSWORD
+            echo ""
+            
+            if [ -z "$SERVER_PASSWORD" ]; then
+                print_error "Le mot de passe ne peut pas être vide"
+                continue
+            fi
+            
+            if [ ${#SERVER_PASSWORD} -lt 8 ]; then
+                print_error "Le mot de passe doit contenir au moins 8 caractères"
+                continue
+            fi
+            
+            read -sp "  Confirmez le mot de passe: " SERVER_PASSWORD_CONFIRM
+            echo ""
+            
+            if [ "$SERVER_PASSWORD" != "$SERVER_PASSWORD_CONFIRM" ]; then
+                print_error "Les mots de passe ne correspondent pas"
+                continue
+            fi
+            
+            break
+        done
+        
+        print_success "Mot de passe serveur configuré"
+    fi
+    
+    echo ""
+    print_success "Secrets cryptographiques générés (JWT, DB, Encryption)"
+    
+    verify_step "Secrets" \
+        "test -n '$JWT_SECRET' && test -n '$DB_PASSWORD' && test -n '$SERVER_PASSWORD'" \
+        "Tous les secrets sont prêts" \
+        "Échec génération secrets"
 }
 
 # Création du fichier .env
@@ -137,196 +361,75 @@ create_env_file() {
     print_header "Création du fichier de configuration"
     
     cat > "$INSTALL_DIR/.env" <<EOF
-# Server Configuration
-PORT=3000
+# Application
 NODE_ENV=production
+PORT=8100
 
-# Database Configuration
-DB_HOST=postgres
-DB_PORT=5432
-DB_NAME=ohkay
+# Auth Database
+AUTH_DB_HOST=auth-db
+AUTH_DB_PORT=5432
+AUTH_DB_NAME=ohkay_auth
+
+# DM Database
+DM_DB_HOST=dm-db
+DM_DB_PORT=5432
+DM_DB_NAME=ohkay_dms
+
+# Registry Database
+REGISTRY_DB_HOST=registry-db
+REGISTRY_DB_PORT=5432
+REGISTRY_DB_NAME=ohkay_server_registry
+
+# Database Credentials (shared)
 DB_USER=ohkay_user
 DB_PASSWORD=$DB_PASSWORD
 
 # Security
 JWT_SECRET=$JWT_SECRET
 SERVER_PASSWORD=$SERVER_PASSWORD
+DB_ENCRYPTION_KEY=$DB_ENCRYPTION_KEY
 
-# Logging
+# Other
+CORS_ORIGIN=*
 LOG_LEVEL=info
-LOG_DIR=./logs
 EOF
     
     chmod 600 "$INSTALL_DIR/.env"
-    print_success "Fichier .env créé"
     
-    print_warning "IMPORTANT - Notez ces informations:"
+    verify_step "Configuration" \
+        "test -f $INSTALL_DIR/.env && grep -q 'JWT_SECRET' $INSTALL_DIR/.env" \
+        "Fichier .env créé avec succès" \
+        "Échec création .env"
+    
     echo ""
-    echo "  Mot de passe serveur: $SERVER_PASSWORD"
-    echo "  Mot de passe DB: $DB_PASSWORD"
+    print_warning "IMPORTANT - Informations de sécurité:"
+    echo ""
+    echo "  ✓ Mot de passe serveur: (celui que vous avez choisi)"
+    echo "  ✓ Mot de passe DB: Généré automatiquement (64 caractères)"
+    echo "  ✓ JWT Secret: Généré automatiquement (64 caractères)"
+    echo "  ✓ Clé de chiffrement: Générée automatiquement (64 caractères)"
+    echo ""
+    echo "  Tous les secrets sont stockés dans: $INSTALL_DIR/.env"
+    echo "  Permissions: 600 (lecture/écriture root uniquement)"
     echo ""
 }
 
 # Création des fichiers Docker
 create_docker_files() {
-    print_header "Création des fichiers Docker"
+    print_header "Vérification des fichiers Docker"
     
-    # Dockerfile
-    cat > "$INSTALL_DIR/Dockerfile" <<'EOF'
-FROM node:20-alpine AS builder
-WORKDIR /app
-COPY package*.json ./
-COPY tsconfig.json ./
-RUN npm ci
-COPY src ./src
-RUN npm run build
-
-FROM node:20-alpine
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci --only=production && npm cache clean --force
-COPY --from=builder /app/dist ./dist
-RUN mkdir -p /app/logs && chown -R node:node /app
-USER node
-EXPOSE 3000
-HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:3000/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"
-CMD ["node", "dist/index.js"]
-EOF
+    # Les fichiers existent déjà dans le repo cloné
+    if [ -f "$INSTALL_DIR/docker-compose.yml" ] && [ -f "$INSTALL_DIR/Dockerfile" ]; then
+        print_success "Fichiers Docker présents (depuis repository)"
+    else
+        print_error "Fichiers Docker manquants"
+        exit 1
+    fi
     
-    # docker-compose.yml
-    cat > "$INSTALL_DIR/docker-compose.yml" <<'EOF'
-version: '3.8'
-
-services:
-  app:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: ohkay-server
-    restart: unless-stopped
-    ports:
-      - "3000:3000"
-    environment:
-      - NODE_ENV=production
-      - PORT=3000
-      - DB_HOST=postgres
-      - DB_PORT=5432
-      - DB_NAME=${DB_NAME}
-      - DB_USER=${DB_USER}
-      - DB_PASSWORD=${DB_PASSWORD}
-      - JWT_SECRET=${JWT_SECRET}
-      - SERVER_PASSWORD=${SERVER_PASSWORD}
-      - LOG_LEVEL=${LOG_LEVEL}
-    volumes:
-      - ./logs:/app/logs
-    depends_on:
-      postgres:
-        condition: service_healthy
-    networks:
-      - ohkay-network
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  postgres:
-    image: postgres:16-alpine
-    container_name: ohkay-postgres
-    restart: unless-stopped
-    environment:
-      - POSTGRES_DB=${DB_NAME}
-      - POSTGRES_USER=${DB_USER}
-      - POSTGRES_PASSWORD=${DB_PASSWORD}
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
-    ports:
-      - "5432:5432"
-    networks:
-      - ohkay-network
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-networks:
-  ohkay-network:
-    driver: bridge
-
-volumes:
-  postgres-data:
-EOF
-    
-    # init.sql
-    cat > "$INSTALL_DIR/init.sql" <<'EOF'
-CREATE TABLE IF NOT EXISTS users (
-    id SERIAL PRIMARY KEY,
-    username VARCHAR(50) UNIQUE NOT NULL,
-    password_hash VARCHAR(255) NOT NULL,
-    display_name VARCHAR(100),
-    avatar_url VARCHAR(500),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS channels (
-    id SERIAL PRIMARY KEY,
-    name VARCHAR(100) NOT NULL,
-    description TEXT,
-    is_private BOOLEAN DEFAULT FALSE,
-    created_by INTEGER REFERENCES users(id),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS messages (
-    id SERIAL PRIMARY KEY,
-    channel_id INTEGER REFERENCES channels(id) ON DELETE CASCADE,
-    user_id INTEGER REFERENCES users(id),
-    content TEXT NOT NULL,
-    is_private BOOLEAN DEFAULT FALSE,
-    recipient_id INTEGER REFERENCES users(id),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    edited_at TIMESTAMP,
-    deleted_at TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS channel_members (
-    id SERIAL PRIMARY KEY,
-    channel_id INTEGER REFERENCES channels(id) ON DELETE CASCADE,
-    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-    role VARCHAR(20) DEFAULT 'member',
-    joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(channel_id, user_id)
-);
-
-CREATE TABLE IF NOT EXISTS sessions (
-    id SERIAL PRIMARY KEY,
-    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-    socket_id VARCHAR(100) UNIQUE NOT NULL,
-    ip_address VARCHAR(45),
-    connected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(channel_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_messages_user ON messages(user_id);
-CREATE INDEX IF NOT EXISTS idx_messages_private ON messages(recipient_id) WHERE is_private = TRUE;
-CREATE INDEX IF NOT EXISTS idx_channel_members ON channel_members(channel_id, user_id);
-CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
-
-INSERT INTO channels (name, description, is_private, created_at)
-VALUES ('general', 'General discussion channel', FALSE, CURRENT_TIMESTAMP)
-ON CONFLICT DO NOTHING;
-EOF
-    
-    print_success "Fichiers Docker créés"
+    verify_step "Docker files" \
+        "test -f $INSTALL_DIR/docker-compose.yml && test -f $INSTALL_DIR/Dockerfile" \
+        "Fichiers Docker OK" \
+        "Fichiers Docker manquants"
 }
 
 # Création du service systemd
@@ -368,24 +471,30 @@ DATE=\$(date +%Y%m%d_%H%M%S)
 
 mkdir -p \$BACKUP_DIR
 
-# Backup PostgreSQL
-docker exec ohkay-postgres pg_dump -U ohkay_user ohkay > \$BACKUP_DIR/ohkay_db_\$DATE.sql
+# Backup toutes les bases PostgreSQL
+docker exec ohkay-auth-db pg_dump -U ohkay_user ohkay_auth > \$BACKUP_DIR/ohkay_auth_\$DATE.sql
+docker exec ohkay-dm-db pg_dump -U ohkay_user ohkay_dms > \$BACKUP_DIR/ohkay_dms_\$DATE.sql
+docker exec ohkay-registry-db pg_dump -U ohkay_user ohkay_server_registry > \$BACKUP_DIR/ohkay_registry_\$DATE.sql
 
 # Compresser
-gzip \$BACKUP_DIR/ohkay_db_\$DATE.sql
+tar -czf \$BACKUP_DIR/ohkay_backup_\$DATE.tar.gz \$BACKUP_DIR/*_\$DATE.sql
+rm \$BACKUP_DIR/*_\$DATE.sql
 
 # Garder seulement les 7 derniers backups
-find \$BACKUP_DIR -name "ohkay_db_*.sql.gz" -mtime +7 -delete
+find \$BACKUP_DIR -name "ohkay_backup_*.tar.gz" -mtime +7 -delete
 
-echo "\$(date): Backup completed - ohkay_db_\$DATE.sql.gz" >> /var/log/ohkay-backup.log
+echo "\$(date): Backup completed - ohkay_backup_\$DATE.tar.gz" >> /var/log/ohkay-backup.log
 EOF
     
     chmod +x /usr/local/bin/backup-ohkay.sh
     
     # Ajouter au crontab
-    (crontab -l 2>/dev/null; echo "0 2 * * * /usr/local/bin/backup-ohkay.sh") | crontab -
+    (crontab -l 2>/dev/null | grep -v backup-ohkay; echo "0 2 * * * /usr/local/bin/backup-ohkay.sh") | crontab -
     
-    print_success "Script de backup créé (exécution quotidienne à 2h)"
+    verify_step "Backup script" \
+        "test -x /usr/local/bin/backup-ohkay.sh" \
+        "Script de backup créé (exécution quotidienne à 2h)" \
+        "Échec création script backup"
 }
 
 # Optimisations système
@@ -425,16 +534,24 @@ start_server() {
     print_info "Construction des images Docker..."
     docker compose build
     
+    verify_step "Docker build" \
+        "docker images | grep -q ohkay" \
+        "Images Docker construites" \
+        "Échec construction images"
+    
     print_info "Démarrage des conteneurs..."
     docker compose up -d
     
-    print_info "Attente du démarrage (30 secondes)..."
-    sleep 30
+    print_info "Attente du démarrage (45 secondes)..."
+    sleep 45
     
-    print_info "Vérification de l'état..."
+    print_info "Vérification de l'état des conteneurs..."
     docker compose ps
     
-    print_success "Serveur démarré"
+    verify_step "Conteneurs" \
+        "docker compose ps | grep -q 'Up'" \
+        "Conteneurs démarrés" \
+        "Certains conteneurs ne sont pas démarrés"
 }
 
 # Test de santé
@@ -442,12 +559,24 @@ health_check() {
     print_header "Test de santé"
     
     print_info "Test de l'endpoint /health..."
-    if curl -f http://localhost:3000/health > /dev/null 2>&1; then
-        print_success "Le serveur répond correctement!"
-    else
-        print_warning "Le serveur ne répond pas encore, vérifiez les logs:"
-        echo "  docker compose logs -f"
-    fi
+    
+    # Essayer plusieurs fois avec timeout
+    for i in {1..5}; do
+        if curl -f -s --max-time 5 http://localhost:8100/health > /dev/null 2>&1; then
+            print_success "✓ Le serveur répond correctement!"
+            echo ""
+            print_info "Réponse du serveur:"
+            curl -s http://localhost:8100/health | jq . 2>/dev/null || curl -s http://localhost:8100/health
+            return 0
+        fi
+        print_warning "Tentative $i/5..."
+        sleep 5
+    done
+    
+    print_warning "Le serveur ne répond pas encore"
+    echo ""
+    print_info "Vérifiez les logs avec:"
+    echo "  cd $INSTALL_DIR && docker compose logs -f"
 }
 
 # Affichage des informations finales
@@ -460,10 +589,11 @@ show_final_info() {
     print_info "Informations importantes:"
     echo ""
     echo "  📁 Répertoire: $INSTALL_DIR"
-    echo "  🔑 Mot de passe serveur: $SERVER_PASSWORD"
-    echo "  🔑 Mot de passe DB: $DB_PASSWORD"
-    echo "  🌐 URL: http://$(hostname -I | awk '{print $1}'):3000"
-    echo "  📊 Health check: http://localhost:3000/health"
+    echo "  🔑 Mot de passe serveur: (celui que vous avez défini)"
+    echo "  � Secrets DB/JWT/Encryption: Générés automatiquement (voir .env)"
+    echo "  🌐 URL Backend: http://$(hostname -I | awk '{print $1}'):8100"
+    echo "  📊 Health check: http://localhost:8100/health"
+    echo "  🔥 Pare-feu: port 8100 ouvert"
     echo ""
     print_info "Commandes utiles:"
     echo ""
@@ -485,7 +615,25 @@ show_final_info() {
     echo "  # Backup manuel"
     echo "  /usr/local/bin/backup-ohkay.sh"
     echo ""
-    print_warning "IMPORTANT: Sauvegardez les mots de passe affichés ci-dessus!"
+    echo "  # Mettre à jour le code"
+    echo "  cd $INSTALL_DIR && git pull && docker compose up -d --build"
+    echo ""
+    print_warning "IMPORTANT: Sauvegardez ces informations:"
+    echo "  - Mot de passe serveur: (celui que vous avez défini)"
+    echo "  - Tous les secrets: $INSTALL_DIR/.env (permissions 600)"
+    echo "  - Backup du .env recommandé dans un gestionnaire de mots de passe"
+    echo ""
+    print_info "Sécurité des secrets:"
+    echo "  ✓ JWT Secret: 64 caractères (512 bits)"
+    echo "  ✓ DB Password: 64 caractères (512 bits)"
+    echo "  ✓ Encryption Key: 64 caractères (512 bits)"
+    echo "  ✓ Fichier .env: accessible uniquement par root"
+    echo ""
+    print_info "Pour déployer le frontend:"
+    echo "  cd $INSTALL_DIR/client"
+    echo "  npm install"
+    echo "  npm run build"
+    echo "  # Puis servir le dossier dist/ avec Nginx/Caddy"
     echo ""
 }
 
@@ -526,10 +674,8 @@ main() {
     
     # Mode interactif ou automatique
     if [[ "$1" == "--auto" ]]; then
-        print_info "Mode automatique"
-        generate_secrets
-        setup_backup="O"
-        do_optimize="O"
+        print_error "Mode automatique désactivé: le mot de passe serveur doit être défini manuellement"
+        exit 1
     else
         interactive_mode
     fi
@@ -537,13 +683,16 @@ main() {
     # Mise à jour système
     print_header "Mise à jour du système"
     dnf update -y
-    print_success "Système à jour"
+    verify_step "Système" "true" "Système à jour" "Échec mise à jour"
     
     # Installation
+    install_git
     install_docker
     configure_firewall
     configure_selinux
     setup_directories
+    clone_repository
+    generate_secrets
     create_env_file
     create_docker_files
     create_systemd_service
