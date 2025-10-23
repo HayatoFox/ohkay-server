@@ -301,7 +301,7 @@ generate_secrets() {
     print_header "Génération des secrets"
     
     # Vérifier si les secrets ont déjà été générés dans interactive_mode
-    if [[ -n "$INSTANCE_PASSWORD" && -n "$DB_PASSWORD" && -n "$JWT_SECRET" && -n "$DB_ENCRYPTION_KEY" ]]; then
+    if [[ -n "$INSTANCE_PASSWORD" && -n "$DB_PASSWORD" && -n "$JWT_SECRET" && -n "$DB_ENCRYPTION_KEY" && -n "$MASTER_ENCRYPTION_KEY" ]]; then
         print_info "Secrets déjà configurés en mode interactif"
         print_success "Tous les secrets sont prêts"
         return 0
@@ -310,7 +310,9 @@ generate_secrets() {
     # Génération automatique de secrets forts
     JWT_SECRET=$(openssl rand -base64 64 | tr -d '\n')
     DB_PASSWORD=$(openssl rand -base64 48 | tr -d '\n')
+    POSTGRES_PASSWORD=$(openssl rand -base64 48 | tr -d '\n')
     DB_ENCRYPTION_KEY=$(openssl rand -base64 64 | tr -d '\n')
+    MASTER_ENCRYPTION_KEY=$(openssl rand -base64 64 | tr -d '\n')
     
     # Demander le mot de passe d'instance à l'utilisateur
     echo ""
@@ -367,10 +369,10 @@ generate_secrets() {
     fi
     
     echo ""
-    print_success "Secrets cryptographiques générés (JWT, DB, Encryption)"
+    print_success "Secrets cryptographiques générés (JWT, DB, Encryption, Messages)"
     
     verify_step "Secrets" \
-        "test -n '$JWT_SECRET' && test -n '$DB_PASSWORD' && test -n '$INSTANCE_PASSWORD'" \
+        "test -n '$JWT_SECRET' && test -n '$DB_PASSWORD' && test -n '$INSTANCE_PASSWORD' && test -n '$MASTER_ENCRYPTION_KEY'" \
         "Tous les secrets sont prêts" \
         "Échec génération secrets"
 }
@@ -385,28 +387,36 @@ NODE_ENV=production
 PORT=8100
 
 # Auth Database
-AUTH_DB_HOST=auth-db
+AUTH_DB_HOST=postgres
 AUTH_DB_PORT=5432
 AUTH_DB_NAME=ohkay_auth
 
 # DM Database
-DM_DB_HOST=dm-db
+DM_DB_HOST=postgres
 DM_DB_PORT=5432
 DM_DB_NAME=ohkay_dms
 
 # Registry Database
-REGISTRY_DB_HOST=registry-db
+REGISTRY_DB_HOST=postgres
 REGISTRY_DB_PORT=5432
 REGISTRY_DB_NAME=ohkay_server_registry
 
-# Database Credentials (shared)
+# Database Credentials
 DB_USER=ohkay_user
 DB_PASSWORD=$DB_PASSWORD
+
+# Database Admin (pour création dynamique)
+DB_HOST=postgres
+DB_PORT=5432
+DB_ADMIN_USER=postgres
+DB_ADMIN_PASSWORD=$POSTGRES_PASSWORD
+POSTGRES_PASSWORD=$POSTGRES_PASSWORD
 
 # Security
 JWT_SECRET=$JWT_SECRET
 INSTANCE_PASSWORD=$INSTANCE_PASSWORD
 DB_ENCRYPTION_KEY=$DB_ENCRYPTION_KEY
+MASTER_ENCRYPTION_KEY=$MASTER_ENCRYPTION_KEY
 
 # Other
 CORS_ORIGIN=*
@@ -426,7 +436,8 @@ EOF
     echo "  ✓ Mot de passe d'instance: (celui que vous avez choisi)"
     echo "  ✓ Mot de passe DB: Généré automatiquement (64 caractères)"
     echo "  ✓ JWT Secret: Généré automatiquement (64 caractères)"
-    echo "  ✓ Clé de chiffrement: Générée automatiquement (64 caractères)"
+    echo "  ✓ Clé de chiffrement DB: Générée automatiquement (64 caractères)"
+    echo "  ✓ Clé de chiffrement messages: Générée automatiquement (64 caractères)"
     echo ""
     echo "  Tous les secrets sont stockés dans: $INSTALL_DIR/.env"
     echo "  Permissions: 600 (lecture/écriture root uniquement)"
@@ -438,15 +449,15 @@ create_docker_files() {
     print_header "Vérification des fichiers Docker"
     
     # Les fichiers existent déjà dans le repo cloné
-    if [ -f "$INSTALL_DIR/docker-compose.yml" ] && [ -f "$INSTALL_DIR/Dockerfile" ]; then
-        print_success "Fichiers Docker présents (depuis repository)"
+    if [ -f "$INSTALL_DIR/docker-compose.unified.yml" ] && [ -f "$INSTALL_DIR/Dockerfile" ]; then
+        print_success "Fichiers Docker présents (architecture unifiée)"
     else
         print_error "Fichiers Docker manquants"
         exit 1
     fi
     
     verify_step "Docker files" \
-        "test -f $INSTALL_DIR/docker-compose.yml && test -f $INSTALL_DIR/Dockerfile" \
+        "test -f $INSTALL_DIR/docker-compose.unified.yml && test -f $INSTALL_DIR/Dockerfile" \
         "Fichiers Docker OK" \
         "Fichiers Docker manquants"
 }
@@ -465,8 +476,8 @@ After=docker.service
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=$INSTALL_DIR
-ExecStart=/usr/bin/docker compose up -d
-ExecStop=/usr/bin/docker compose down
+ExecStart=/usr/bin/docker compose -f docker-compose.unified.yml up -d
+ExecStop=/usr/bin/docker compose -f docker-compose.unified.yml down
 User=root
 
 [Install]
@@ -490,17 +501,22 @@ DATE=\$(date +%Y%m%d_%H%M%S)
 
 mkdir -p \$BACKUP_DIR
 
-# Backup toutes les bases PostgreSQL
-docker exec ohkay-auth-db pg_dump -U ohkay_user ohkay_auth > \$BACKUP_DIR/ohkay_auth_\$DATE.sql
-docker exec ohkay-dm-db pg_dump -U ohkay_user ohkay_dms > \$BACKUP_DIR/ohkay_dms_\$DATE.sql
-docker exec ohkay-registry-db pg_dump -U ohkay_user ohkay_server_registry > \$BACKUP_DIR/ohkay_registry_\$DATE.sql
+# Backup PostgreSQL unifié (toutes les bases)
+docker exec ohkay-postgres pg_dumpall -U postgres > \$BACKUP_DIR/ohkay_all_dbs_\$DATE.sql
 
 # Compresser
-tar -czf \$BACKUP_DIR/ohkay_backup_\$DATE.tar.gz \$BACKUP_DIR/*_\$DATE.sql
-rm \$BACKUP_DIR/*_\$DATE.sql
+tar -czf \$BACKUP_DIR/ohkay_backup_\$DATE.tar.gz \$BACKUP_DIR/ohkay_all_dbs_\$DATE.sql
+rm \$BACKUP_DIR/ohkay_all_dbs_\$DATE.sql
+
+# Backup fichier .env (contient les clés de chiffrement - CRITIQUE)
+cp $INSTALL_DIR/.env \$BACKUP_DIR/.env_\$DATE
+tar -czf \$BACKUP_DIR/ohkay_env_\$DATE.tar.gz \$BACKUP_DIR/.env_\$DATE
+rm \$BACKUP_DIR/.env_\$DATE
+chmod 600 \$BACKUP_DIR/ohkay_env_\$DATE.tar.gz
 
 # Garder seulement les 7 derniers backups
 find \$BACKUP_DIR -name "ohkay_backup_*.tar.gz" -mtime +7 -delete
+find \$BACKUP_DIR -name "ohkay_env_*.tar.gz" -mtime +7 -delete
 
 echo "\$(date): Backup completed - ohkay_backup_\$DATE.tar.gz" >> /var/log/ohkay-backup.log
 EOF
@@ -617,7 +633,7 @@ show_final_info() {
     print_info "Commandes utiles:"
     echo ""
     echo "  # Voir les logs"
-    echo "  cd $INSTALL_DIR && docker compose logs -f"
+    echo "  cd $INSTALL_DIR && docker compose -f docker-compose.unified.yml logs -f"
     echo ""
     echo "  # Arrêter le serveur"
     echo "  systemctl stop $SERVICE_NAME"
@@ -671,12 +687,15 @@ interactive_mode() {
     if [[ "$auto_pass" =~ ^[Nn]$ ]]; then
         read -sp "Mot de passe d'instance: " INSTANCE_PASSWORD
         echo ""
-        read -sp "Mot de passe PostgreSQL: " DB_PASSWORD
+        read -sp "Mot de passe PostgreSQL: " POSTGRES_PASSWORD
+        echo ""
+        read -sp "Mot de passe DB User: " DB_PASSWORD
         echo ""
         # Générer automatiquement les clés cryptographiques (même longueur qu'en auto)
         JWT_SECRET=$(openssl rand -base64 64 | tr -d '\n')
         DB_ENCRYPTION_KEY=$(openssl rand -base64 64 | tr -d '\n')
-        print_info "JWT_SECRET et DB_ENCRYPTION_KEY générés automatiquement"
+        MASTER_ENCRYPTION_KEY=$(openssl rand -base64 64 | tr -d '\n')
+        print_info "JWT_SECRET, DB_ENCRYPTION_KEY et MASTER_ENCRYPTION_KEY générés automatiquement"
     fi
     # Note: Si auto_pass=O, generate_secrets sera appelé plus tard dans main()
     

@@ -1,6 +1,9 @@
 import { Router, Response } from 'express';
 import { dbManager } from '../utils/database';
 import { authenticateToken, AuthRequest } from '../utils/auth';
+import { checkServerMembership } from '../utils/permissions';
+import { generateServerKey } from '../utils/crypto';
+import { DEFAULT_PERMISSIONS, permissionsToBigInt } from '../utils/permissions-flags';
 import logger from '../utils/logger';
 
 const router = Router();
@@ -65,13 +68,16 @@ router.post('/', authenticateToken, async (req: AuthRequest, res: Response) => {
     const dbName = `ohkay_server_${Date.now()}`;
     const inviteCode = Math.random().toString(36).substring(2, 10).toUpperCase();
 
+    // Générer une clé de chiffrement unique pour ce serveur
+    const serverEncryptionKey = generateServerKey();
+
     // Chiffrer le mot de passe DB avant de le stocker
     const encryptedPassword = dbManager.encryptPassword(process.env.DB_PASSWORD!);
 
     // Créer l'entrée dans le registre
     const serverResult = await dbManager.queryRegistry(
-      `INSERT INTO servers (name, description, owner_id, invite_code, db_name, db_host, db_port, db_user, db_password_encrypted) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) 
+      `INSERT INTO servers (name, description, owner_id, invite_code, db_name, db_host, db_port, db_user, db_password_encrypted, encryption_key) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) 
        RETURNING *`,
       [
         name, 
@@ -82,7 +88,8 @@ router.post('/', authenticateToken, async (req: AuthRequest, res: Response) => {
         process.env.DB_HOST || 'localhost', // TODO: Support multi-host
         5432,
         process.env.DB_USER,
-        encryptedPassword
+        encryptedPassword,
+        serverEncryptionKey
       ]
     );
 
@@ -94,26 +101,59 @@ router.post('/', authenticateToken, async (req: AuthRequest, res: Response) => {
       [server.id, userId]
     );
 
-    // TODO: Créer physiquement la base de données PostgreSQL pour ce serveur
-    // Pour l'instant, on utilise server-1-db existante
+    // Créer physiquement la base de données PostgreSQL pour ce serveur
     const serverId = server.id;
+    
+    try {
+      await dbManager.createServerDatabase(dbName, process.env.DB_USER!);
+      logger.info('Server database created successfully', { serverId, dbName });
+    } catch (error: any) {
+      // Rollback : supprimer l'entrée dans le registre si la création de DB échoue
+      logger.error('Failed to create server database, rolling back', { 
+        serverId, 
+        dbName, 
+        error: error.message 
+      });
+      
+      await dbManager.queryRegistry('DELETE FROM server_members WHERE server_id = $1', [serverId]);
+      await dbManager.queryRegistry('DELETE FROM servers WHERE id = $1', [serverId]);
+      
+      return res.status(500).json({ 
+        error: 'Failed to create server database',
+        details: error.message 
+      });
+    }
 
-    // Créer le rôle @everyone dans la DB du serveur
-    const serverPool = await dbManager.getServerDB(serverId);
-    await serverPool.query(
-      'INSERT INTO roles (name, permissions, position, is_default) VALUES ($1, $2, $3, $4)',
-      ['@everyone', 0, 0, true]
+    // Créer le rôle @everyone dans la DB du serveur avec permissions par défaut
+    await dbManager.queryServer(
+      serverId,
+      'INSERT INTO roles (name, permissions, position, is_default, color) VALUES ($1, $2, $3, $4, $5)',
+      ['@everyone', permissionsToBigInt(DEFAULT_PERMISSIONS), 0, true, null]
     );
 
     // Créer le channel général
-    await serverPool.query(
+    await dbManager.queryServer(
+      serverId,
       'INSERT INTO channels (name, description, type, position, created_by) VALUES ($1, $2, $3, $4, $5)',
       ['general', 'Discussion générale', 'text', 0, userId]
     );
 
-    logger.info('Server created', { serverId: server.id, serverName: name, userId, dbName });
+    logger.info('Server created successfully', { 
+      serverId: server.id, 
+      serverName: name, 
+      userId, 
+      dbName,
+      inviteCode 
+    });
 
-    return res.status(201).json({ message: 'Server created', server });
+    return res.status(201).json({ 
+      message: 'Server created successfully', 
+      server: {
+        ...server,
+        // Ne pas exposer les infos sensibles de la DB
+        db_password_encrypted: undefined,
+      }
+    });
   } catch (error: any) {
     logger.error('Error creating server', { error: error.message, stack: error.stack });
     return res.status(500).json({ error: 'Failed to create server' });
@@ -121,20 +161,9 @@ router.post('/', authenticateToken, async (req: AuthRequest, res: Response) => {
 });
 
 // Obtenir les détails d'un serveur
-router.get('/:serverId', authenticateToken, async (req: AuthRequest, res: Response) => {
+router.get('/:serverId', authenticateToken, checkServerMembership, async (req: AuthRequest, res: Response) => {
   try {
     const serverId = parseInt(req.params.serverId);
-    const userId = req.user?.id;
-
-    // Vérifier que l'utilisateur est membre (depuis registry)
-    const memberCheck = await dbManager.queryRegistry(
-      'SELECT * FROM server_members WHERE server_id = $1 AND user_id = $2',
-      [serverId, userId]
-    );
-
-    if (memberCheck.rows.length === 0) {
-      return res.status(403).json({ error: 'Not a member of this server' });
-    }
 
     const result = await dbManager.queryRegistry(
       'SELECT * FROM servers WHERE id = $1 AND status = $2',
@@ -166,20 +195,10 @@ router.get('/:serverId', authenticateToken, async (req: AuthRequest, res: Respon
 });
 
 // Obtenir les channels d'un serveur
-router.get('/:serverId/channels', authenticateToken, async (req: AuthRequest, res: Response) => {
+router.get('/:serverId/channels', authenticateToken, checkServerMembership, async (req: AuthRequest, res: Response) => {
   try {
     const serverId = parseInt(req.params.serverId);
     const userId = req.user?.id;
-
-    // Vérifier membership (registry)
-    const memberCheck = await dbManager.queryRegistry(
-      'SELECT * FROM server_members WHERE server_id = $1 AND user_id = $2',
-      [serverId, userId]
-    );
-
-    if (memberCheck.rows.length === 0) {
-      return res.status(403).json({ error: 'Not a member of this server' });
-    }
 
     // Récupérer channels depuis la DB du serveur
     const result = await dbManager.queryServer(
@@ -210,21 +229,87 @@ router.get('/:serverId/channels', authenticateToken, async (req: AuthRequest, re
   }
 });
 
-// Obtenir les membres d'un serveur
-router.get('/:serverId/members', authenticateToken, async (req: AuthRequest, res: Response) => {
+// Modifier les paramètres d'un serveur (MANAGE_GUILD)
+router.patch('/:serverId', authenticateToken, checkServerMembership, async (req: AuthRequest, res: Response) => {
   try {
     const serverId = parseInt(req.params.serverId);
     const userId = req.user?.id;
+    const { name, description, icon_url, is_public } = req.body;
 
-    // Vérifier membership (registry)
-    const memberCheck = await dbManager.queryRegistry(
-      'SELECT * FROM server_members WHERE server_id = $1 AND user_id = $2',
-      [serverId, userId]
-    );
-
-    if (memberCheck.rows.length === 0) {
-      return res.status(403).json({ error: 'Not a member of this server' });
+    // Vérifier permission MANAGE_GUILD
+    const { getUserPermissions } = await import('./permissions');
+    const { PermissionFlags, hasPermission } = await import('../utils/permissions-flags');
+    
+    const userPerms = await getUserPermissions(serverId, userId!);
+    if (!hasPermission(userPerms, PermissionFlags.MANAGE_GUILD)) {
+      return res.status(403).json({ error: 'Missing MANAGE_GUILD permission' });
     }
+
+    // Validation
+    if (name !== undefined) {
+      if (!name || name.trim().length === 0) {
+        return res.status(400).json({ error: 'Server name cannot be empty' });
+      }
+      if (name.length > 100) {
+        return res.status(400).json({ error: 'Server name too long' });
+      }
+    }
+
+    if (description !== undefined && description && description.length > 500) {
+      return res.status(400).json({ error: 'Description too long' });
+    }
+
+    // Construire la query dynamiquement
+    const updates: string[] = [];
+    const values: any[] = [];
+    let paramCount = 1;
+
+    if (name !== undefined) {
+      updates.push(`name = $${paramCount}`);
+      values.push(name);
+      paramCount++;
+    }
+
+    if (description !== undefined) {
+      updates.push(`description = $${paramCount}`);
+      values.push(description);
+      paramCount++;
+    }
+
+    if (icon_url !== undefined) {
+      updates.push(`icon_url = $${paramCount}`);
+      values.push(icon_url);
+      paramCount++;
+    }
+
+    if (is_public !== undefined) {
+      updates.push(`is_public = $${paramCount}`);
+      values.push(is_public);
+      paramCount++;
+    }
+
+    if (updates.length === 0) {
+      return res.status(400).json({ error: 'No fields to update' });
+    }
+
+    values.push(serverId);
+    const query = `UPDATE servers SET ${updates.join(', ')} WHERE id = $${paramCount} RETURNING *`;
+
+    const result = await dbManager.queryRegistry(query, values);
+
+    logger.info('Server updated', { serverId, userId, updates: Object.keys(req.body) });
+
+    return res.json({ server: result.rows[0] });
+  } catch (error: any) {
+    logger.error('Error updating server', { error: error.message });
+    return res.status(500).json({ error: 'Failed to update server' });
+  }
+});
+
+// Obtenir les membres d'un serveur
+router.get('/:serverId/members', authenticateToken, checkServerMembership, async (req: AuthRequest, res: Response) => {
+  try {
+    const serverId = parseInt(req.params.serverId);
 
     // Récupérer les membres depuis registry
     const membersResult = await dbManager.queryRegistry(

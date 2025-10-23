@@ -11,7 +11,18 @@ import authRoutes from './routes/auth';
 import channelRoutes from './routes/channels';
 import serverRoutes from './routes/servers';
 import dmRoutes from './routes/dms';
+import inviteRoutes from './routes/invites';
+import attachmentRoutes from './routes/attachments';
+import userRoutes from './routes/users';
+import roleRoutes from './routes/roles';
+import permissionRoutes from './routes/permissions';
+import moderationRoutes from './routes/moderation';
+import emojiRoutes from './routes/emojis';
+import reactionRoutes from './routes/reactions';
+import voiceRoutes from './routes/voice';
+import memberRoutes from './routes/members';
 import { setupSocketHandlers } from './socket/handlers';
+import { voiceServer } from './utils/voice-server';
 
 // Load environment variables
 dotenv.config();
@@ -72,7 +83,20 @@ app.get('/health', (_req: Request, res: Response) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/channels', channelRoutes);
 app.use('/api/servers', serverRoutes);
+app.use('/api/invites', inviteRoutes);
 app.use('/api/dms', dmRoutes);
+app.use('/api/attachments', attachmentRoutes);
+app.use('/api/users', userRoutes);
+app.use('/api/roles', roleRoutes);
+app.use('/api/permissions', permissionRoutes);
+app.use('/api/moderation', moderationRoutes);
+app.use('/api/emojis', emojiRoutes);
+app.use('/api/reactions', reactionRoutes);
+app.use('/api/voice', voiceRoutes);
+app.use('/api/members', memberRoutes);
+
+// Servir les fichiers uploadés
+app.use('/uploads', express.static('uploads'));
 
 // 404 handler
 app.use((req: Request, res: Response) => {
@@ -125,6 +149,10 @@ const startServer = async () => {
     if (!health.auth_db || !health.dm_db || !health.registry_db) {
       throw new Error('One or more databases are not healthy');
     }
+    
+    // Initialize voice server
+    await voiceServer.initialize();
+    logger.info('Voice server initialized');
     
     // Écouter sur 0.0.0.0 pour accepter les connexions externes
     const port = Number(PORT);

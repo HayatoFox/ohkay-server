@@ -19,6 +19,9 @@ CREATE TABLE servers (
     db_user VARCHAR(50),
     db_password_encrypted TEXT, -- À chiffrer avec crypto
     
+    -- Clé de chiffrement pour les messages du serveur (AES-256-GCM)
+    encryption_key TEXT NOT NULL, -- Clé base64, générée à la création du serveur
+    
     -- Métadonnées
     status VARCHAR(20) DEFAULT 'active' CHECK (status IN ('active', 'maintenance', 'archived', 'deleted')),
     max_members INTEGER DEFAULT 1000, -- Limite de membres

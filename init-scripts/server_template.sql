@@ -26,7 +26,8 @@ CREATE TABLE messages (
     id SERIAL PRIMARY KEY,
     channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
     user_id INTEGER NOT NULL, -- FK logique vers auth_db.users
-    content TEXT NOT NULL,
+    content TEXT NOT NULL, -- Chiffré (texte ou métadata JSON)
+    message_type VARCHAR(20) DEFAULT 'text' CHECK (message_type IN ('text', 'file', 'image', 'video', 'gif')),
     is_edited BOOLEAN DEFAULT FALSE,
     is_pinned BOOLEAN DEFAULT FALSE,
     reply_to_id INTEGER REFERENCES messages(id) ON DELETE SET NULL, -- Réponse à un message
@@ -46,9 +47,11 @@ CREATE TABLE roles (
     name VARCHAR(100) NOT NULL,
     color VARCHAR(7), -- Couleur hex #RRGGBB
     position INTEGER DEFAULT 0, -- Hiérarchie (plus élevé = plus de pouvoir)
-    permissions BIGINT DEFAULT 0, -- Bitfield 64-bit pour permissions
+    permissions VARCHAR(20) DEFAULT '0', -- Bitfield 64-bit stocké en string
     is_mentionable BOOLEAN DEFAULT TRUE,
     is_default BOOLEAN DEFAULT FALSE, -- Rôle @everyone
+    is_hoisted BOOLEAN DEFAULT FALSE, -- Affiché séparément
+    icon_url TEXT, -- Icône du rôle (premium)
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -87,16 +90,20 @@ CREATE TABLE channel_permissions (
     channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
     role_id INTEGER REFERENCES roles(id) ON DELETE CASCADE,
     user_id INTEGER, -- FK logique vers auth_db.users (NULL si override par rôle)
-    allow_permissions BIGINT DEFAULT 0, -- Permissions accordées
-    deny_permissions BIGINT DEFAULT 0, -- Permissions refusées
+    allow_permissions VARCHAR(20) DEFAULT '0', -- Permissions accordées (bigint en string)
+    deny_permissions VARCHAR(20) DEFAULT '0', -- Permissions refusées (bigint en string)
     
     CONSTRAINT check_target CHECK (
         (role_id IS NOT NULL AND user_id IS NULL) OR 
         (role_id IS NULL AND user_id IS NOT NULL)
-    )
+    ),
+    
+    CONSTRAINT unique_channel_target UNIQUE (channel_id, COALESCE(role_id, 0), COALESCE(user_id, 0))
 );
 
 CREATE INDEX idx_channel_permissions_channel ON channel_permissions(channel_id);
+CREATE INDEX idx_channel_permissions_role ON channel_permissions(role_id) WHERE role_id IS NOT NULL;
+CREATE INDEX idx_channel_permissions_user ON channel_permissions(user_id) WHERE user_id IS NOT NULL;
 CREATE INDEX idx_channel_permissions_role ON channel_permissions(role_id);
 CREATE INDEX idx_channel_permissions_user ON channel_permissions(user_id);
 
@@ -141,14 +148,39 @@ CREATE TABLE webhooks (
 CREATE INDEX idx_webhooks_channel ON webhooks(channel_id);
 CREATE INDEX idx_webhooks_token ON webhooks(token);
 
+-- Emojis custom du serveur
+CREATE TABLE emojis (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(32) NOT NULL UNIQUE, -- Nom de l'emoji (ex: "party_parrot")
+    image_url TEXT NOT NULL, -- URL de l'image
+    animated BOOLEAN DEFAULT FALSE, -- GIF ou statique
+    created_by INTEGER NOT NULL, -- user_id qui a créé l'emoji
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_emojis_name ON emojis(name);
+CREATE INDEX idx_emojis_created_by ON emojis(created_by);
+
+-- Bans du serveur
+CREATE TABLE bans (
+    user_id INTEGER PRIMARY KEY, -- FK logique vers auth_db.users
+    banned_by INTEGER NOT NULL, -- FK logique vers auth_db.users (qui a banni)
+    reason TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_bans_created ON bans(created_at DESC);
+
 -- Logs d'audit du serveur
 CREATE TABLE audit_log (
     id SERIAL PRIMARY KEY,
-    action VARCHAR(50) NOT NULL, -- 'message_deleted', 'member_banned', 'channel_created', etc.
+    action VARCHAR(50) NOT NULL, -- 'MEMBER_KICK', 'MEMBER_BAN', 'MESSAGE_DELETE', 'CHANNEL_CREATE', etc.
     user_id INTEGER, -- FK logique vers auth_db.users (qui a fait l'action)
-    target_id INTEGER, -- ID de la cible (user_id, channel_id, etc.)
-    target_type VARCHAR(20), -- 'user', 'channel', 'role', etc.
-    details JSONB, -- Détails de l'action
+    target_user_id INTEGER, -- Pour actions sur users
+    target_channel_id INTEGER, -- Pour actions sur channels
+    target_role_id INTEGER, -- Pour actions sur roles
+    reason TEXT,
+    details JSONB, -- Données supplémentaires
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 

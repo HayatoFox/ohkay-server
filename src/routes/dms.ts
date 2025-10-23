@@ -1,6 +1,7 @@
 import { Router, Response } from 'express';
 import { dbManager } from '../utils/database';
 import { authenticateToken, AuthRequest } from '../utils/auth';
+import { encryptDM, decryptDM } from '../utils/crypto';
 import logger from '../utils/logger';
 
 const router = Router();
@@ -175,10 +176,10 @@ router.get('/:conversationId/messages', authenticateToken, async (req: AuthReque
 
     const result = await dbManager.queryDM(query, params);
 
-    // Récupérer les infos des expéditeurs depuis auth_db
+    // Récupérer les infos des expéditeurs depuis auth_db ET déchiffrer les messages
     const messages = await Promise.all(
       result.rows.map(async (msg) => {
-        const userResult = await dbManager.queryAuth(
+        const senderResult = await dbManager.queryAuth(
           `SELECT u.username, p.display_name, p.avatar_url
            FROM users u
            LEFT JOIN user_profiles p ON u.id = p.user_id
@@ -186,7 +187,10 @@ router.get('/:conversationId/messages', authenticateToken, async (req: AuthReque
           [msg.sender_id]
         );
 
-        const sender = userResult.rows[0] || {};
+        // Déchiffrer le message DM avec la clé de l'utilisateur
+        const decryptedContent = decryptDM(msg.content, userId!);
+
+        const sender = senderResult.rows[0] || {};
 
         return {
           id: msg.id,
@@ -194,7 +198,7 @@ router.get('/:conversationId/messages', authenticateToken, async (req: AuthReque
           senderUsername: sender.username,
           senderDisplayName: sender.display_name,
           senderAvatarUrl: sender.avatar_url,
-          content: msg.content,
+          content: decryptedContent, // Contenu déchiffré
           isEdited: msg.is_edited,
           createdAt: msg.created_at,
           editedAt: msg.edited_at,
@@ -251,10 +255,13 @@ router.post('/:conversationId/messages', authenticateToken, async (req: AuthRequ
       return res.status(403).json({ error: 'Access denied to this conversation' });
     }
 
-    // Insérer le message
+    // Chiffrer le message avec la clé de l'utilisateur
+    const encryptedContent = encryptDM(content.trim(), userId);
+
+    // Insérer le message CHIFFRÉ
     const result = await dbManager.queryDM(
       'INSERT INTO dm_messages (conversation_id, sender_id, content) VALUES ($1, $2, $3) RETURNING *',
-      [conversationId, userId, content.trim()]
+      [conversationId, userId, encryptedContent]
     );
 
     const message = result.rows[0];
@@ -270,7 +277,15 @@ router.post('/:conversationId/messages', authenticateToken, async (req: AuthRequ
 
     const sender = userResult.rows[0];
 
-    logger.info('DM message sent', { conversationId, userId, messageId: message.id });
+    logger.info('DM message sent (encrypted in DB)', { 
+      conversationId, 
+      userId, 
+      messageId: message.id,
+      encryptedLength: encryptedContent.length
+    });
+
+    // Déchiffrer pour la réponse
+    const decryptedForResponse = decryptDM(message.content, userId);
 
     const responseMessage = {
       id: message.id,
@@ -279,7 +294,7 @@ router.post('/:conversationId/messages', authenticateToken, async (req: AuthRequ
       senderUsername: sender.username,
       senderDisplayName: sender.display_name,
       senderAvatarUrl: sender.avatar_url,
-      content: message.content,
+      content: decryptedForResponse, // Envoyer en clair dans la réponse
       isEdited: message.is_edited,
       createdAt: message.created_at,
     };

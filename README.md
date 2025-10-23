@@ -6,6 +6,7 @@ A self-hosted Discord alternative built with Node.js, TypeScript, Socket.io, and
 
 - **Real-time Communication**: WebSocket-based messaging using Socket.io
 - **Multi-Database Architecture**: Separate databases for auth, DMs, registry, and per-server data
+- **Dynamic Database Creation**: Automatic creation of isolated databases for each server ✨ NEW
 - **Channel System**: Create and manage text/voice channels with categories
 - **Private Messaging**: Account-to-account direct messaging system
 - **Server Registry**: Centralized server management with invite codes

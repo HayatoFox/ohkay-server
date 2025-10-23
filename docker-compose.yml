@@ -10,9 +10,16 @@ services:
     restart: unless-stopped
     ports:
       - "8100:8100"
+      - "7500-8000:7500-8000/udp"  # WebRTC ports (501 ports pour ~250 connexions simultanées)
+      - "7500-8000:7500-8000/tcp"  # WebRTC ports
     environment:
       - NODE_ENV=production
       - PORT=8100
+      
+      # Voice Server
+      - VOICE_ANNOUNCED_IP=${VOICE_ANNOUNCED_IP:-}
+      - VOICE_RTC_MIN_PORT=7500
+      - VOICE_RTC_MAX_PORT=8000
       
       # Auth Database
       - AUTH_DB_HOST=auth-db
@@ -32,6 +39,12 @@ services:
       # Database Credentials (shared)
       - DB_USER=${DB_USER:-ohkay_user}
       - DB_PASSWORD=${DB_PASSWORD}
+      
+      # Database Admin Credentials (pour création dynamique de DB)
+      - DB_HOST=auth-db
+      - DB_PORT=5432
+      - DB_ADMIN_USER=${DB_ADMIN_USER:-postgres}
+      - DB_ADMIN_PASSWORD=${DB_ADMIN_PASSWORD:-${DB_PASSWORD}}
       
       # Security
       - JWT_SECRET=${JWT_SECRET}
