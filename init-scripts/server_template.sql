@@ -102,8 +102,6 @@ CREATE TABLE channel_permissions (
 );
 
 CREATE INDEX idx_channel_permissions_channel ON channel_permissions(channel_id);
-CREATE INDEX idx_channel_permissions_role ON channel_permissions(role_id) WHERE role_id IS NOT NULL;
-CREATE INDEX idx_channel_permissions_user ON channel_permissions(user_id) WHERE user_id IS NOT NULL;
 CREATE INDEX idx_channel_permissions_role ON channel_permissions(role_id);
 CREATE INDEX idx_channel_permissions_user ON channel_permissions(user_id);
 
