@@ -8,13 +8,13 @@ COPY package*.json ./
 COPY tsconfig.json ./
 
 # Install ALL dependencies (including devDependencies for TypeScript build)
-RUN npm ci --include=dev
+RUN npm ci
 
 # Copy source code
 COPY src ./src
 
-# Build TypeScript
-RUN npm run build
+# Build TypeScript using direct path to tsc
+RUN ./node_modules/.bin/tsc
 
 # Production stage
 FROM node:22-alpine
