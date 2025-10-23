@@ -92,6 +92,8 @@ services:
     environment:
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-${DB_PASSWORD}}
       - POSTGRES_USER=postgres
+      - DB_USER=${DB_USER:-ohkay_user}
+      - DB_PASSWORD=${DB_PASSWORD}
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./init-scripts:/docker-entrypoint-initdb.d
