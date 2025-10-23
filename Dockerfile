@@ -6,6 +6,7 @@ WORKDIR /app
 # Install build dependencies for native modules (mediasoup)
 RUN apt-get update && apt-get install -y \
     python3 \
+    python3-pip
     make \
     gcc \
     g++ \
@@ -32,6 +33,7 @@ WORKDIR /app
 # Install runtime dependencies for mediasoup
 RUN apt-get update && apt-get install -y \
     python3 \
+    python3-pip
     make \
     gcc \
     g++ \
