@@ -150,9 +150,13 @@ configure_firewall_standard() {
     firewall-cmd --permanent --add-service=ssh
     firewall-cmd --permanent --add-rich-rule='rule service name=ssh limit value=3/m accept'
     
-    # Port 8100 avec rate limiting
+    # Port 8100 (API HTTP/WebSocket) avec rate limiting
     firewall-cmd --permanent --add-port=8100/tcp
     firewall-cmd --permanent --add-rich-rule='rule port port=8100 protocol=tcp limit value=100/m accept'
+    
+    # Ports WebRTC (7500-8000) pour système vocal
+    firewall-cmd --permanent --add-port=7500-8000/udp
+    firewall-cmd --permanent --add-port=7500-8000/tcp
     
     # DNS
     firewall-cmd --permanent --add-service=dns
@@ -166,7 +170,7 @@ configure_firewall_standard() {
     
     verify_step "Firewall standard" \
         "firewall-cmd --list-ports | grep -q 8100" \
-        "Pare-feu configuré: port 8100 ouvert avec rate limiting" \
+        "Pare-feu configuré: ports 8100 (API) + 7500-8000 (WebRTC) ouverts" \
         "Échec configuration pare-feu"
     
     echo ""
@@ -183,9 +187,13 @@ configure_firewall_strict() {
     firewall-cmd --permanent --zone=public --add-service=ssh 2>/dev/null || true
     firewall-cmd --permanent --zone=public --add-rich-rule='rule service name=ssh limit value=3/m accept' 2>/dev/null || true
     
-    # Port 8100 avec rate limiting (ignorer si déjà présent)
+    # Port 8100 (API) avec rate limiting (ignorer si déjà présent)
     firewall-cmd --permanent --zone=public --add-port=8100/tcp 2>/dev/null || true
     firewall-cmd --permanent --zone=public --add-rich-rule='rule port port=8100 protocol=tcp limit value=100/m accept' 2>/dev/null || true
+    
+    # Ports WebRTC (7500-8000) pour système vocal (ignorer si déjà présent)
+    firewall-cmd --permanent --zone=public --add-port=7500-8000/udp 2>/dev/null || true
+    firewall-cmd --permanent --zone=public --add-port=7500-8000/tcp 2>/dev/null || true
     
     # DNS (ignorer si déjà présent)
     firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 0 -p udp --dport 53 -j ACCEPT 2>/dev/null || true
@@ -239,7 +247,23 @@ configure_selinux() {
         if [[ "$SELINUX_STATUS" == "Enforcing" ]]; then
             print_info "Configuration des permissions SELinux pour Docker..."
             setsebool -P container_manage_cgroup on 2>/dev/null || true
-            print_success "SELinux configuré"
+            
+            print_info "Autorisation du port 8100 pour HTTP dans SELinux..."
+            if command -v semanage &> /dev/null; then
+                semanage port -a -t http_port_t -p tcp 8100 2>/dev/null || \
+                semanage port -m -t http_port_t -p tcp 8100 2>/dev/null || true
+                print_success "Port 8100 autorisé dans SELinux"
+            else
+                print_warning "semanage non disponible, installation de policycoreutils-python-utils..."
+                dnf install -y policycoreutils-python-utils
+                semanage port -a -t http_port_t -p tcp 8100 2>/dev/null || \
+                semanage port -m -t http_port_t -p tcp 8100 2>/dev/null || true
+                print_success "Port 8100 autorisé dans SELinux"
+            fi
+            
+            print_success "SELinux configuré pour Docker et port 8100"
+        else
+            print_info "SELinux n'est pas en mode Enforcing, pas de configuration nécessaire"
         fi
     fi
 }
@@ -381,10 +405,19 @@ generate_secrets() {
 create_env_file() {
     print_header "Création du fichier de configuration"
     
+    # Récupérer l'IP publique du serveur
+    PUBLIC_IP=$(curl -s ifconfig.me || hostname -I | awk '{print $1}')
+    print_info "IP publique détectée: $PUBLIC_IP"
+    
     cat > "$INSTALL_DIR/.env" <<EOF
 # Application
 NODE_ENV=production
 PORT=8100
+
+# Voice Server (WebRTC)
+VOICE_ANNOUNCED_IP=$PUBLIC_IP
+VOICE_RTC_MIN_PORT=7500
+VOICE_RTC_MAX_PORT=8000
 
 # Auth Database
 AUTH_DB_HOST=postgres
@@ -449,7 +482,7 @@ create_docker_files() {
     print_header "Vérification des fichiers Docker"
     
     # Les fichiers existent déjà dans le repo cloné
-    if [ -f "$INSTALL_DIR/docker-compose.unified.yml" ] && [ -f "$INSTALL_DIR/Dockerfile" ]; then
+    if [ -f "$INSTALL_DIR/docker-compose.yml" ] && [ -f "$INSTALL_DIR/Dockerfile" ]; then
         print_success "Fichiers Docker présents (architecture unifiée)"
     else
         print_error "Fichiers Docker manquants"
@@ -457,7 +490,7 @@ create_docker_files() {
     fi
     
     verify_step "Docker files" \
-        "test -f $INSTALL_DIR/docker-compose.unified.yml && test -f $INSTALL_DIR/Dockerfile" \
+        "test -f $INSTALL_DIR/docker-compose.yml && test -f $INSTALL_DIR/Dockerfile" \
         "Fichiers Docker OK" \
         "Fichiers Docker manquants"
 }
@@ -476,8 +509,8 @@ After=docker.service
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=$INSTALL_DIR
-ExecStart=/usr/bin/docker compose -f docker-compose.unified.yml up -d
-ExecStop=/usr/bin/docker compose -f docker-compose.unified.yml down
+ExecStart=/usr/bin/docker compose up -d
+ExecStop=/usr/bin/docker compose down
 User=root
 
 [Install]
@@ -622,18 +655,22 @@ show_final_info() {
     print_success "Ohkay Server est installé et en cours d'exécution"
     echo ""
     print_info "Informations importantes:"
+    # Récupérer l'IP publique
+    PUBLIC_IP=$(curl -s ifconfig.me || hostname -I | awk '{print $1}')
+    
     echo ""
     echo "  📁 Répertoire: $INSTALL_DIR"
     echo "  🔑 Mot de passe d'instance: (celui que vous avez défini)"
     echo "  🔐 Secrets DB/JWT/Encryption: Générés automatiquement (voir .env)"
-    echo "  🌐 URL Backend: http://$(hostname -I | awk '{print $1}'):8100"
+    echo "  🌐 URL Backend: http://$PUBLIC_IP:8100"
     echo "  📊 Health check: http://localhost:8100/health"
-    echo "  🔥 Pare-feu: port 8100 ouvert"
+    echo "  🔥 Pare-feu: ports 8100 (API) + 7500-8000 (WebRTC) ouverts"
+    echo "  🎤 WebRTC IP: $PUBLIC_IP (ports 7500-8000)"
     echo ""
     print_info "Commandes utiles:"
     echo ""
     echo "  # Voir les logs"
-    echo "  cd $INSTALL_DIR && docker compose -f docker-compose.unified.yml logs -f"
+    echo "  cd $INSTALL_DIR && docker compose logs -f"
     echo ""
     echo "  # Arrêter le serveur"
     echo "  systemctl stop $SERVICE_NAME"
