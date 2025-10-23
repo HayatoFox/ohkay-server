@@ -1,15 +1,18 @@
 # Multi-stage build for optimized image size
-FROM node:22-slim AS builder
+FROM node:22-alpine AS builder
 
 WORKDIR /app
 
 # Install build dependencies for native modules (mediasoup)
-RUN apt-get update && apt-get install -y \
-    python3 \
-    make \
-    gcc \
-    g++ \
-    && rm -rf /var/lib/apt/lists/*
+# Retry mechanism for Alpine repository issues
+RUN for i in 1 2 3; do \
+    apk update && apk add --no-cache \
+        python3 \
+        make \
+        gcc \
+        g++ \
+        linux-headers && break || sleep 5; \
+    done
 
 # Copy package files
 COPY package*.json ./
@@ -25,17 +28,20 @@ COPY src ./src
 RUN npx tsc
 
 # Production stage
-FROM node:22-slim
+FROM node:22-alpine
 
 WORKDIR /app
 
 # Install runtime dependencies for mediasoup
-RUN apt-get update && apt-get install -y \
-    python3 \
-    make \
-    gcc \
-    g++ \
-    && rm -rf /var/lib/apt/lists/*
+# Retry mechanism for Alpine repository issues
+RUN for i in 1 2 3; do \
+    apk update && apk add --no-cache \
+        python3 \
+        make \
+        gcc \
+        g++ \
+        linux-headers && break || sleep 5; \
+    done
 
 # Install production dependencies only
 COPY package*.json ./
