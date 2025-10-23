@@ -3,12 +3,15 @@ FROM node:22-alpine AS builder
 
 WORKDIR /app
 
+# Install build dependencies for native modules (mediasoup)
+RUN apk add --no-cache python3 make g++
+
 # Copy package files
 COPY package*.json ./
 COPY tsconfig.json ./
 
 # Install ALL dependencies (including devDependencies for TypeScript build)
-RUN npm ci
+RUN npm ci --verbose
 
 # Copy source code
 COPY src ./src
@@ -21,9 +24,12 @@ FROM node:22-alpine
 
 WORKDIR /app
 
+# Install runtime dependencies for mediasoup
+RUN apk add --no-cache python3 make g++
+
 # Install production dependencies only
 COPY package*.json ./
-RUN npm ci --only=production && npm cache clean --force
+RUN npm ci --omit=dev --verbose && npm cache clean --force
 
 # Copy built application from builder
 COPY --from=builder /app/dist ./dist
