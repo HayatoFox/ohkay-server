@@ -4,7 +4,7 @@ FROM node:22-alpine AS builder
 WORKDIR /app
 
 # Install build dependencies for native modules (mediasoup)
-RUN apk add --no-cache python3 make g++
+RUN apk update && apk add --no-cache python3 make gcc g++ linux-headers
 
 # Copy package files
 COPY package*.json ./
@@ -25,7 +25,7 @@ FROM node:22-alpine
 WORKDIR /app
 
 # Install runtime dependencies for mediasoup
-RUN apk add --no-cache python3 make g++
+RUN apk update && apk add --no-cache python3 make gcc g++ linux-headers
 
 # Install production dependencies only
 COPY package*.json ./
