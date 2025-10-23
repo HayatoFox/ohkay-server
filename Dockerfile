@@ -7,8 +7,8 @@ WORKDIR /app
 COPY package*.json ./
 COPY tsconfig.json ./
 
-# Install dependencies
-RUN npm ci
+# Install ALL dependencies (including devDependencies for TypeScript build)
+RUN npm ci --include=dev
 
 # Copy source code
 COPY src ./src
@@ -35,11 +35,11 @@ RUN mkdir -p /app/logs && chown -R node:node /app
 USER node
 
 # Expose port
-EXPOSE 3000
+EXPOSE 8100
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:3000/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"
+  CMD node -e "require('http').get('http://localhost:8100/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"
 
 # Start application
 CMD ["node", "dist/index.js"]

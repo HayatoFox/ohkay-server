@@ -84,9 +84,23 @@ router.post(
       const serverId = parseInt(req.params.serverId);
       const channelId = parseInt(req.params.channelId);
       const transportId = req.params.transportId;
+      const userId = req.user?.id;
       const { dtlsParameters } = req.body;
 
+      // Vérifier permission CONNECT (protection contre replay attack)
+      const channelPerms = await getUserChannelPermissions(serverId, channelId, userId!);
+      if (!hasPermission(channelPerms, PermissionFlags.CONNECT)) {
+        return res.status(403).json({ error: 'Missing CONNECT permission' });
+      }
+
       await voiceServer.connectTransport(serverId, channelId, transportId, dtlsParameters);
+
+      logger.info('Transport connected', {
+        serverId,
+        channelId,
+        userId,
+        transportId,
+      });
 
       return res.json({ message: 'Transport connected' });
     } catch (error: any) {
