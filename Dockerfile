@@ -13,8 +13,8 @@ RUN npm ci
 # Copy source code
 COPY src ./src
 
-# Build TypeScript using direct path to tsc
-RUN ./node_modules/.bin/tsc
+# Build TypeScript using npx to ensure tsc is found
+RUN npx tsc
 
 # Production stage
 FROM node:22-alpine
