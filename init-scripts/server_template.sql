@@ -98,7 +98,7 @@ CREATE TABLE channel_permissions (
         (role_id IS NULL AND user_id IS NOT NULL)
     ),
     
-    CONSTRAINT unique_channel_target UNIQUE (channel_id, COALESCE(role_id, 0), COALESCE(user_id, 0))
+    CONSTRAINT unique_channel_target UNIQUE (channel_id, role_id, user_id)
 );
 
 CREATE INDEX idx_channel_permissions_channel ON channel_permissions(channel_id);
