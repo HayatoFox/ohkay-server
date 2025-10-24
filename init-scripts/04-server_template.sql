@@ -4,7 +4,7 @@
 -- ============================================================================
 
 -- Channels (texte, vocal, annonces)
-CREATE TABLE channels (
+CREATE TABLE IF NOT EXISTS channels (
     id SERIAL PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
     description TEXT,
@@ -18,11 +18,11 @@ CREATE TABLE channels (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX idx_channels_position ON channels(position);
-CREATE INDEX idx_channels_type ON channels(type);
+CREATE INDEX IF NOT EXISTS idx_channels_position ON channels(position);
+CREATE INDEX IF NOT EXISTS idx_channels_type ON channels(type);
 
 -- Messages du serveur
-CREATE TABLE messages (
+CREATE TABLE IF NOT EXISTS messages (
     id SERIAL PRIMARY KEY,
     channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
     user_id INTEGER NOT NULL, -- FK logique vers auth_db.users
@@ -36,13 +36,13 @@ CREATE TABLE messages (
     deleted_at TIMESTAMP -- Soft delete
 );
 
-CREATE INDEX idx_messages_channel ON messages(channel_id, created_at DESC);
-CREATE INDEX idx_messages_user ON messages(user_id);
-CREATE INDEX idx_messages_deleted ON messages(deleted_at) WHERE deleted_at IS NULL;
-CREATE INDEX idx_messages_pinned ON messages(is_pinned) WHERE is_pinned = TRUE;
+CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(channel_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_messages_user ON messages(user_id);
+CREATE INDEX IF NOT EXISTS idx_messages_deleted ON messages(deleted_at) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_messages_pinned ON messages(is_pinned) WHERE is_pinned = TRUE;
 
 -- Rôles du serveur
-CREATE TABLE roles (
+CREATE TABLE IF NOT EXISTS roles (
     id SERIAL PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
     color VARCHAR(7), -- Couleur hex #RRGGBB
@@ -55,11 +55,11 @@ CREATE TABLE roles (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX idx_roles_position ON roles(position DESC);
-CREATE INDEX idx_roles_default ON roles(is_default);
+CREATE INDEX IF NOT EXISTS idx_roles_position ON roles(position DESC);
+CREATE INDEX IF NOT EXISTS idx_roles_default ON roles(is_default);
 
 -- Attribution des rôles aux membres
-CREATE TABLE member_roles (
+CREATE TABLE IF NOT EXISTS member_roles (
     user_id INTEGER NOT NULL, -- FK logique vers auth_db.users
     role_id INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
     assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -67,11 +67,11 @@ CREATE TABLE member_roles (
     PRIMARY KEY (user_id, role_id)
 );
 
-CREATE INDEX idx_member_roles_user ON member_roles(user_id);
-CREATE INDEX idx_member_roles_role ON member_roles(role_id);
+CREATE INDEX IF NOT EXISTS idx_member_roles_user ON member_roles(user_id);
+CREATE INDEX IF NOT EXISTS idx_member_roles_role ON member_roles(role_id);
 
 -- Invitations du serveur
-CREATE TABLE invites (
+CREATE TABLE IF NOT EXISTS invites (
     id SERIAL PRIMARY KEY,
     code VARCHAR(8) UNIQUE NOT NULL,
     created_by INTEGER NOT NULL, -- user_id de auth_db
@@ -81,11 +81,11 @@ CREATE TABLE invites (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX idx_invites_code ON invites(code);
-CREATE INDEX idx_invites_expires ON invites(expires_at);
+CREATE INDEX IF NOT EXISTS idx_invites_code ON invites(code);
+CREATE INDEX IF NOT EXISTS idx_invites_expires ON invites(expires_at);
 
 -- Permissions de channel (override par rôle ou utilisateur)
-CREATE TABLE channel_permissions (
+CREATE TABLE IF NOT EXISTS channel_permissions (
     id SERIAL PRIMARY KEY,
     channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
     role_id INTEGER REFERENCES roles(id) ON DELETE CASCADE,
@@ -101,12 +101,12 @@ CREATE TABLE channel_permissions (
     CONSTRAINT unique_channel_target UNIQUE (channel_id, role_id, user_id)
 );
 
-CREATE INDEX idx_channel_permissions_channel ON channel_permissions(channel_id);
-CREATE INDEX idx_channel_permissions_role ON channel_permissions(role_id);
-CREATE INDEX idx_channel_permissions_user ON channel_permissions(user_id);
+CREATE INDEX IF NOT EXISTS idx_channel_permissions_channel ON channel_permissions(channel_id);
+CREATE INDEX IF NOT EXISTS idx_channel_permissions_role ON channel_permissions(role_id);
+CREATE INDEX IF NOT EXISTS idx_channel_permissions_user ON channel_permissions(user_id);
 
 -- Réactions aux messages (emojis)
-CREATE TABLE message_reactions (
+CREATE TABLE IF NOT EXISTS message_reactions (
     message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
     user_id INTEGER NOT NULL, -- FK logique vers auth_db.users
     emoji VARCHAR(100) NOT NULL, -- Unicode emoji ou custom emoji ID
@@ -115,10 +115,10 @@ CREATE TABLE message_reactions (
     PRIMARY KEY (message_id, user_id, emoji)
 );
 
-CREATE INDEX idx_reactions_message ON message_reactions(message_id);
+CREATE INDEX IF NOT EXISTS idx_reactions_message ON message_reactions(message_id);
 
 -- Attachments (fichiers joints aux messages)
-CREATE TABLE message_attachments (
+CREATE TABLE IF NOT EXISTS message_attachments (
     id SERIAL PRIMARY KEY,
     message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
     filename VARCHAR(255) NOT NULL,
@@ -130,10 +130,10 @@ CREATE TABLE message_attachments (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX idx_attachments_message ON message_attachments(message_id);
+CREATE INDEX IF NOT EXISTS idx_attachments_message ON message_attachments(message_id);
 
 -- Webhooks (pour intégrations)
-CREATE TABLE webhooks (
+CREATE TABLE IF NOT EXISTS webhooks (
     id SERIAL PRIMARY KEY,
     channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
     name VARCHAR(100) NOT NULL,
@@ -143,11 +143,11 @@ CREATE TABLE webhooks (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX idx_webhooks_channel ON webhooks(channel_id);
-CREATE INDEX idx_webhooks_token ON webhooks(token);
+CREATE INDEX IF NOT EXISTS idx_webhooks_channel ON webhooks(channel_id);
+CREATE INDEX IF NOT EXISTS idx_webhooks_token ON webhooks(token);
 
 -- Emojis custom du serveur
-CREATE TABLE emojis (
+CREATE TABLE IF NOT EXISTS emojis (
     id SERIAL PRIMARY KEY,
     name VARCHAR(32) NOT NULL UNIQUE, -- Nom de l'emoji (ex: "party_parrot")
     image_url TEXT NOT NULL, -- URL de l'image
@@ -156,21 +156,21 @@ CREATE TABLE emojis (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX idx_emojis_name ON emojis(name);
-CREATE INDEX idx_emojis_created_by ON emojis(created_by);
+CREATE INDEX IF NOT EXISTS idx_emojis_name ON emojis(name);
+CREATE INDEX IF NOT EXISTS idx_emojis_created_by ON emojis(created_by);
 
 -- Bans du serveur
-CREATE TABLE bans (
+CREATE TABLE IF NOT EXISTS bans (
     user_id INTEGER PRIMARY KEY, -- FK logique vers auth_db.users
     banned_by INTEGER NOT NULL, -- FK logique vers auth_db.users (qui a banni)
     reason TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX idx_bans_created ON bans(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_bans_created ON bans(created_at DESC);
 
 -- Logs d'audit du serveur
-CREATE TABLE audit_log (
+CREATE TABLE IF NOT EXISTS audit_log (
     id SERIAL PRIMARY KEY,
     action VARCHAR(50) NOT NULL, -- 'MEMBER_KICK', 'MEMBER_BAN', 'MESSAGE_DELETE', 'CHANNEL_CREATE', etc.
     user_id INTEGER, -- FK logique vers auth_db.users (qui a fait l'action)
@@ -182,9 +182,9 @@ CREATE TABLE audit_log (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX idx_audit_log_action ON audit_log(action);
-CREATE INDEX idx_audit_log_user ON audit_log(user_id);
-CREATE INDEX idx_audit_log_created ON audit_log(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_log_action ON audit_log(action);
+CREATE INDEX IF NOT EXISTS idx_audit_log_user ON audit_log(user_id);
+CREATE INDEX IF NOT EXISTS idx_audit_log_created ON audit_log(created_at DESC);
 
 -- Trigger pour incrémenter current_uses lors de l'utilisation d'une invitation
 CREATE OR REPLACE FUNCTION increment_invite_usage() RETURNS TRIGGER AS $$

@@ -2,8 +2,11 @@
 -- OHKAY AUTH DATABASE - Authentification & Utilisateurs Globaux
 -- ============================================================================
 
+-- Se connecter à la database auth
+\c ohkay_auth
+
 -- Utilisateurs globaux
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
     username VARCHAR(50) UNIQUE NOT NULL,
     password_hash VARCHAR(255) NOT NULL,
@@ -15,12 +18,12 @@ CREATE TABLE users (
     status_emoji VARCHAR(50) -- Emoji du statut
 );
 
-CREATE INDEX idx_users_username ON users(username);
-CREATE INDEX idx_users_email ON users(email);
-CREATE INDEX idx_users_status ON users(status);
+CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
 
 -- Profils utilisateurs
-CREATE TABLE user_profiles (
+CREATE TABLE IF NOT EXISTS user_profiles (
     user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
     display_name VARCHAR(100),
     avatar_url TEXT,
@@ -30,7 +33,7 @@ CREATE TABLE user_profiles (
 );
 
 -- Sessions JWT (pour révocation de tokens)
-CREATE TABLE sessions (
+CREATE TABLE IF NOT EXISTS sessions (
     id SERIAL PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     token_hash VARCHAR(255) NOT NULL,
@@ -40,9 +43,9 @@ CREATE TABLE sessions (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX idx_sessions_user ON sessions(user_id);
-CREATE INDEX idx_sessions_token_hash ON sessions(token_hash);
-CREATE INDEX idx_sessions_expires ON sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions(token_hash);
+CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
 
 -- Fonction pour nettoyer les sessions expirées
 CREATE OR REPLACE FUNCTION cleanup_expired_sessions() RETURNS void AS $$
@@ -52,7 +55,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- Logs de connexion (optionnel, pour audit)
-CREATE TABLE login_history (
+CREATE TABLE IF NOT EXISTS login_history (
     id SERIAL PRIMARY KEY,
     user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
     username VARCHAR(50),
@@ -62,8 +65,8 @@ CREATE TABLE login_history (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX idx_login_history_user ON login_history(user_id);
-CREATE INDEX idx_login_history_created ON login_history(created_at);
+CREATE INDEX IF NOT EXISTS idx_login_history_user ON login_history(user_id);
+CREATE INDEX IF NOT EXISTS idx_login_history_created ON login_history(created_at);
 
 -- Trigger pour mettre à jour last_seen
 CREATE OR REPLACE FUNCTION update_last_seen() RETURNS TRIGGER AS $$
@@ -79,7 +82,7 @@ CREATE TRIGGER trigger_update_last_seen
     EXECUTE FUNCTION update_last_seen();
 
 -- Emojis de base (communs à toutes les instances)
-CREATE TABLE global_emojis (
+CREATE TABLE IF NOT EXISTS global_emojis (
     id SERIAL PRIMARY KEY,
     name VARCHAR(32) NOT NULL UNIQUE, -- Nom de l'emoji (ex: "smile", "heart")
     unicode_char VARCHAR(20), -- Caractère Unicode (ex: "😀", "❤️")
@@ -88,8 +91,8 @@ CREATE TABLE global_emojis (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX idx_global_emojis_name ON global_emojis(name);
-CREATE INDEX idx_global_emojis_category ON global_emojis(category);
+CREATE INDEX IF NOT EXISTS idx_global_emojis_name ON global_emojis(name);
+CREATE INDEX IF NOT EXISTS idx_global_emojis_category ON global_emojis(category);
 
 -- Données initiales - Emojis de base
 INSERT INTO global_emojis (name, unicode_char, category, keywords) VALUES

@@ -2,8 +2,11 @@
 -- OHKAY DM DATABASE - Messages Privés (Compte à Compte)
 -- ============================================================================
 
+-- Se connecter à la database dms
+\c ohkay_dms
+
 -- Conversations privées entre 2 utilisateurs
-CREATE TABLE dm_conversations (
+CREATE TABLE IF NOT EXISTS dm_conversations (
     id SERIAL PRIMARY KEY,
     user1_id INTEGER NOT NULL, -- FK logique vers auth_db.users
     user2_id INTEGER NOT NULL, -- FK logique vers auth_db.users
@@ -15,12 +18,12 @@ CREATE TABLE dm_conversations (
     CONSTRAINT unique_conversation UNIQUE (user1_id, user2_id)
 );
 
-CREATE INDEX idx_dm_conversations_user1 ON dm_conversations(user1_id);
-CREATE INDEX idx_dm_conversations_user2 ON dm_conversations(user2_id);
-CREATE INDEX idx_dm_conversations_last_message ON dm_conversations(last_message_at DESC);
+CREATE INDEX IF NOT EXISTS idx_dm_conversations_user1 ON dm_conversations(user1_id);
+CREATE INDEX IF NOT EXISTS idx_dm_conversations_user2 ON dm_conversations(user2_id);
+CREATE INDEX IF NOT EXISTS idx_dm_conversations_last_message ON dm_conversations(last_message_at DESC);
 
 -- Messages privés
-CREATE TABLE dm_messages (
+CREATE TABLE IF NOT EXISTS dm_messages (
     id SERIAL PRIMARY KEY,
     conversation_id INTEGER NOT NULL REFERENCES dm_conversations(id) ON DELETE CASCADE,
     sender_id INTEGER NOT NULL, -- FK logique vers auth_db.users
@@ -31,12 +34,12 @@ CREATE TABLE dm_messages (
     deleted_at TIMESTAMP -- Soft delete
 );
 
-CREATE INDEX idx_dm_messages_conversation ON dm_messages(conversation_id, created_at DESC);
-CREATE INDEX idx_dm_messages_sender ON dm_messages(sender_id);
-CREATE INDEX idx_dm_messages_deleted ON dm_messages(deleted_at) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_dm_messages_conversation ON dm_messages(conversation_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_dm_messages_sender ON dm_messages(sender_id);
+CREATE INDEX IF NOT EXISTS idx_dm_messages_deleted ON dm_messages(deleted_at) WHERE deleted_at IS NULL;
 
 -- Statut de lecture par utilisateur
-CREATE TABLE dm_read_status (
+CREATE TABLE IF NOT EXISTS dm_read_status (
     conversation_id INTEGER NOT NULL REFERENCES dm_conversations(id) ON DELETE CASCADE,
     user_id INTEGER NOT NULL, -- FK logique vers auth_db.users
     last_read_message_id INTEGER,
@@ -45,7 +48,7 @@ CREATE TABLE dm_read_status (
     PRIMARY KEY (conversation_id, user_id)
 );
 
-CREATE INDEX idx_dm_read_status_user ON dm_read_status(user_id);
+CREATE INDEX IF NOT EXISTS idx_dm_read_status_user ON dm_read_status(user_id);
 
 -- Trigger pour mettre à jour last_message_at
 CREATE OR REPLACE FUNCTION update_conversation_last_message() RETURNS TRIGGER AS $$

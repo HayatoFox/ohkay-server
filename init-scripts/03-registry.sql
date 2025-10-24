@@ -2,8 +2,11 @@
 -- OHKAY REGISTRY DATABASE - Registre des Serveurs
 -- ============================================================================
 
+-- Se connecter à la database registry
+\c ohkay_server_registry
+
 -- Métadonnées des serveurs Discord-like
-CREATE TABLE servers (
+CREATE TABLE IF NOT EXISTS servers (
     id SERIAL PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
     description TEXT,
@@ -29,13 +32,13 @@ CREATE TABLE servers (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX idx_servers_owner ON servers(owner_id);
-CREATE INDEX idx_servers_status ON servers(status);
-CREATE INDEX idx_servers_invite_code ON servers(invite_code);
-CREATE INDEX idx_servers_name ON servers(name);
+CREATE INDEX IF NOT EXISTS idx_servers_owner ON servers(owner_id);
+CREATE INDEX IF NOT EXISTS idx_servers_status ON servers(status);
+CREATE INDEX IF NOT EXISTS idx_servers_invite_code ON servers(invite_code);
+CREATE INDEX IF NOT EXISTS idx_servers_name ON servers(name);
 
 -- Membres des serveurs (relation many-to-many)
-CREATE TABLE server_members (
+CREATE TABLE IF NOT EXISTS server_members (
     server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
     user_id INTEGER NOT NULL, -- FK logique vers auth_db.users
     nickname VARCHAR(100), -- Surnom spécifique au serveur
@@ -44,11 +47,11 @@ CREATE TABLE server_members (
     PRIMARY KEY (server_id, user_id)
 );
 
-CREATE INDEX idx_server_members_user ON server_members(user_id);
-CREATE INDEX idx_server_members_server ON server_members(server_id);
+CREATE INDEX IF NOT EXISTS idx_server_members_user ON server_members(user_id);
+CREATE INDEX IF NOT EXISTS idx_server_members_server ON server_members(server_id);
 
 -- Bannissements
-CREATE TABLE server_bans (
+CREATE TABLE IF NOT EXISTS server_bans (
     server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
     user_id INTEGER NOT NULL, -- FK logique vers auth_db.users
     reason TEXT,
@@ -59,10 +62,10 @@ CREATE TABLE server_bans (
     PRIMARY KEY (server_id, user_id)
 );
 
-CREATE INDEX idx_server_bans_expires ON server_bans(expires_at);
+CREATE INDEX IF NOT EXISTS idx_server_bans_expires ON server_bans(expires_at);
 
 -- Statistiques des serveurs (pour dashboard)
-CREATE TABLE server_stats (
+CREATE TABLE IF NOT EXISTS server_stats (
     server_id INTEGER PRIMARY KEY REFERENCES servers(id) ON DELETE CASCADE,
     total_members INTEGER DEFAULT 0,
     total_channels INTEGER DEFAULT 0,
@@ -72,7 +75,7 @@ CREATE TABLE server_stats (
 );
 
 -- Logs d'audit du registre
-CREATE TABLE registry_audit_log (
+CREATE TABLE IF NOT EXISTS registry_audit_log (
     id SERIAL PRIMARY KEY,
     server_id INTEGER REFERENCES servers(id) ON DELETE SET NULL,
     action VARCHAR(50) NOT NULL, -- 'server_created', 'member_joined', 'server_deleted', etc.
@@ -81,9 +84,9 @@ CREATE TABLE registry_audit_log (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX idx_audit_log_server ON registry_audit_log(server_id);
-CREATE INDEX idx_audit_log_action ON registry_audit_log(action);
-CREATE INDEX idx_audit_log_created ON registry_audit_log(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_log_server ON registry_audit_log(server_id);
+CREATE INDEX IF NOT EXISTS idx_audit_log_action ON registry_audit_log(action);
+CREATE INDEX IF NOT EXISTS idx_audit_log_created ON registry_audit_log(created_at DESC);
 
 -- Trigger pour mettre à jour updated_at
 CREATE OR REPLACE FUNCTION update_updated_at() RETURNS TRIGGER AS $$
