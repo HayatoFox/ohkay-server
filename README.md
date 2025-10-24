@@ -1,6 +1,7 @@
 # 🚀 Ohkay Server
 
 A self-hosted Discord alternative built with Node.js, TypeScript, Socket.io, and PostgreSQL. Multi-database architecture for scalability and security.
+rjoz3/09VkdbwEZd+Gv/
 
 ## ✨ Features
 
