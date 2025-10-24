@@ -2,6 +2,24 @@
 #############################################################################
 # Ohkay Server - Script d'installation automatique pour AlmaLinux 9
 # Usage: sudo bash install-almalinux.sh
+#
+# Ce script installe:
+#   - Docker + Docker Compose (containerisation)
+#   - PostgreSQL 16 (via Docker)
+#   - Node.js 20 + TypeScript (via Docker)
+#   - Configuration du firewall et SELinux
+#   - Service systemd pour auto-démarrage
+#   - Script de backup automatique
+#
+# Prérequis:
+#   - AlmaLinux 9 (ou compatible RHEL 9)
+#   - Accès root (sudo)
+#   - Connexion Internet
+#   - Au moins 2 Go de RAM
+#   - Au moins 10 Go d'espace disque
+#
+# Note: Node.js n'est PAS installé sur le système hôte
+#       Tout s'exécute dans des conteneurs Docker
 #############################################################################
 
 set -e
@@ -50,6 +68,75 @@ check_root() {
     fi
 }
 
+# Vérification OS
+check_os() {
+    print_header "Vérification du système d'exploitation"
+    
+    if [ -f /etc/almalinux-release ]; then
+        OS_VERSION=$(cat /etc/almalinux-release)
+        print_success "Système détecté: $OS_VERSION"
+        
+        # Vérifier que c'est AlmaLinux 9
+        if ! grep -q "release 9" /etc/almalinux-release; then
+            print_warning "Ce script est optimisé pour AlmaLinux 9"
+            print_warning "Version détectée: $OS_VERSION"
+            read -p "Continuer quand même? (o/N): " continue_anyway
+            if [[ ! "$continue_anyway" =~ ^[Oo]$ ]]; then
+                exit 1
+            fi
+        fi
+    elif [ -f /etc/redhat-release ]; then
+        OS_VERSION=$(cat /etc/redhat-release)
+        print_warning "Système détecté: $OS_VERSION"
+        print_warning "Ce script est conçu pour AlmaLinux 9, mais peut fonctionner sur RHEL/Rocky"
+        read -p "Continuer? (o/N): " continue_anyway
+        if [[ ! "$continue_anyway" =~ ^[Oo]$ ]]; then
+            exit 1
+        fi
+    else
+        print_error "Ce script est conçu pour AlmaLinux 9"
+        print_error "Système non supporté détecté"
+        exit 1
+    fi
+}
+
+# Vérification des prérequis système
+check_system_requirements() {
+    print_header "Vérification des prérequis système"
+    
+    # RAM disponible (en Mo)
+    TOTAL_RAM=$(free -m | awk '/^Mem:/{print $2}')
+    if [ "$TOTAL_RAM" -lt 1800 ]; then
+        print_error "RAM insuffisante: ${TOTAL_RAM}Mo détectés (minimum 2048Mo recommandé)"
+        read -p "Continuer quand même? (o/N): " continue_ram
+        if [[ ! "$continue_ram" =~ ^[Oo]$ ]]; then
+            exit 1
+        fi
+    else
+        print_success "RAM: ${TOTAL_RAM}Mo ✓"
+    fi
+    
+    # Espace disque disponible dans /opt (en Go)
+    DISK_SPACE=$(df -BG /opt | awk 'NR==2 {print $4}' | sed 's/G//')
+    if [ "$DISK_SPACE" -lt 10 ]; then
+        print_error "Espace disque insuffisant dans /opt: ${DISK_SPACE}Go (minimum 10Go recommandé)"
+        read -p "Continuer quand même? (o/N): " continue_disk
+        if [[ ! "$continue_disk" =~ ^[Oo]$ ]]; then
+            exit 1
+        fi
+    else
+        print_success "Espace disque /opt: ${DISK_SPACE}Go ✓"
+    fi
+    
+    # Connexion Internet
+    if ! ping -c 1 -W 2 8.8.8.8 > /dev/null 2>&1; then
+        print_error "Pas de connexion Internet détectée"
+        exit 1
+    else
+        print_success "Connexion Internet ✓"
+    fi
+}
+
 # Fonction de vérification avec sortie
 verify_step() {
     local step_name=$1
@@ -90,10 +177,10 @@ install_docker() {
         docker --version
     else
         print_info "Installation des dépendances..."
-        dnf install -y dnf-plugins-core
+        dnf install -y yum-utils
         
         print_info "Ajout du repository Docker..."
-        dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+        yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
         
         print_info "Installation de Docker Engine..."
         dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
@@ -106,6 +193,19 @@ install_docker() {
             "Docker installé et actif: $(docker --version)" \
             "Docker non fonctionnel"
     fi
+}
+
+# Installation des outils nécessaires
+install_tools() {
+    print_header "Installation des outils nécessaires"
+    
+    print_info "Installation de wget, curl, jq, openssl..."
+    dnf install -y wget curl jq openssl
+    
+    verify_step "Outils" \
+        "command -v wget &> /dev/null && command -v curl &> /dev/null && command -v jq &> /dev/null" \
+        "Outils installés: wget, curl, jq, openssl" \
+        "Échec installation des outils"
 }
 
 # Configuration du pare-feu
@@ -405,6 +505,20 @@ generate_secrets() {
 create_env_file() {
     print_header "Création du fichier de configuration"
     
+    # Vérifier si .env existe déjà
+    if [ -f "$INSTALL_DIR/.env" ]; then
+        print_warning "Le fichier .env existe déjà"
+        read -p "  Voulez-vous le remplacer? (o/N): " replace_env
+        if [[ ! "$replace_env" =~ ^[Oo]$ ]]; then
+            print_info "Conservation du fichier .env existant"
+            return 0
+        else
+            # Backup de l'ancien .env
+            cp "$INSTALL_DIR/.env" "$INSTALL_DIR/.env.backup.$(date +%Y%m%d_%H%M%S)"
+            print_info "Ancien .env sauvegardé"
+        fi
+    fi
+    
     # Récupérer l'IP publique du serveur
     PUBLIC_IP=$(curl -s ifconfig.me || hostname -I | awk '{print $1}')
     print_info "IP publique détectée: $PUBLIC_IP"
@@ -620,7 +734,11 @@ start_server() {
     cd "$INSTALL_DIR"
     
     print_info "Construction des images Docker..."
-    docker compose build
+    if ! docker compose build --no-cache; then
+        print_error "Échec de la construction des images Docker"
+        print_info "Vérifiez les logs ci-dessus pour plus de détails"
+        exit 1
+    fi
     
     verify_step "Docker build" \
         "docker images | grep -q ohkay" \
@@ -628,10 +746,16 @@ start_server() {
         "Échec construction images"
     
     print_info "Démarrage des conteneurs..."
-    docker compose up -d
+    if ! docker compose up -d; then
+        print_error "Échec du démarrage des conteneurs"
+        print_info "Logs Docker:"
+        docker compose logs --tail=50
+        exit 1
+    fi
     
-    print_info "Attente du démarrage (45 secondes)..."
-    sleep 45
+    print_info "Attente du démarrage complet (60 secondes)..."
+    print_warning "Le premier démarrage peut prendre plus de temps (construction des tables DB)..."
+    sleep 60
     
     print_info "Vérification de l'état des conteneurs..."
     docker compose ps
@@ -649,7 +773,7 @@ health_check() {
     print_info "Test de l'endpoint /health..."
     
     # Essayer plusieurs fois avec timeout
-    for i in {1..5}; do
+    for i in {1..10}; do
         if curl -f -s --max-time 5 http://localhost:8100/health > /dev/null 2>&1; then
             print_success "✓ Le serveur répond correctement!"
             echo ""
@@ -657,7 +781,7 @@ health_check() {
             curl -s http://localhost:8100/health | jq . 2>/dev/null || curl -s http://localhost:8100/health
             return 0
         fi
-        print_warning "Tentative $i/5..."
+        print_warning "Tentative $i/10... (attente du healthcheck Docker)"
         sleep 5
     done
     
@@ -768,6 +892,27 @@ main() {
     print_header "Installation d'Ohkay Server pour AlmaLinux 9"
     
     check_root
+    check_os
+    check_system_requirements
+    
+    # Afficher un résumé de ce qui va être installé
+    echo ""
+    print_info "Ce script va installer:"
+    echo "  • Docker + Docker Compose"
+    echo "  • PostgreSQL 16 (conteneurisé)"
+    echo "  • Ohkay Server (Node.js 20 + TypeScript)"
+    echo "  • Service systemd (auto-démarrage)"
+    echo "  • Configuration firewall + SELinux"
+    echo "  • Script de backup automatique (cron)"
+    echo ""
+    print_warning "Durée estimée: 5-10 minutes"
+    echo ""
+    read -p "Continuer avec l'installation? (O/n): " confirm_install
+    if [[ "$confirm_install" =~ ^[Nn]$ ]]; then
+        print_info "Installation annulée"
+        exit 0
+    fi
+    echo ""
     
     # Mode interactif ou automatique
     if [[ "$1" == "--auto" ]]; then
@@ -784,6 +929,7 @@ main() {
     
     # Installation
     install_git
+    install_tools
     install_docker
     configure_firewall
     configure_selinux
@@ -809,7 +955,24 @@ main() {
 }
 
 # Gestion des erreurs
-trap 'print_error "Une erreur est survenue. Vérifiez les logs."; exit 1' ERR
+cleanup_on_error() {
+    local exit_code=$?
+    if [ $exit_code -ne 0 ]; then
+        print_error "Une erreur est survenue (code: $exit_code)"
+        echo ""
+        print_info "Logs utiles pour le diagnostic:"
+        echo "  - Logs Docker: cd $INSTALL_DIR && docker compose logs"
+        echo "  - Logs système: journalctl -xe"
+        echo "  - Status containers: docker ps -a"
+        echo ""
+        print_info "Pour nettoyer une installation échouée:"
+        echo "  cd $INSTALL_DIR && docker compose down -v"
+        echo "  systemctl stop $SERVICE_NAME"
+        echo "  systemctl disable $SERVICE_NAME"
+    fi
+}
+
+trap cleanup_on_error ERR
 
 # Lancement
 main "$@"
