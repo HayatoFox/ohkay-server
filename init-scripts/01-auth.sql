@@ -39,27 +39,17 @@ CREATE TABLE IF NOT EXISTS user_profiles (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Sessions JWT (pour révocation de tokens)
+-- Sessions WebSocket (connexions actives)
 CREATE TABLE IF NOT EXISTS sessions (
     id SERIAL PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    token_hash VARCHAR(255) NOT NULL,
+    socket_id VARCHAR(100) UNIQUE NOT NULL,
     ip_address VARCHAR(45), -- Support IPv6
-    user_agent TEXT,
-    expires_at TIMESTAMP NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    connected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
-CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions(token_hash);
-CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
-
--- Fonction pour nettoyer les sessions expirées
-CREATE OR REPLACE FUNCTION cleanup_expired_sessions() RETURNS void AS $$
-BEGIN
-    DELETE FROM sessions WHERE expires_at < NOW();
-END;
-$$ LANGUAGE plpgsql;
+CREATE INDEX IF NOT EXISTS idx_sessions_socket ON sessions(socket_id);
 
 -- Logs de connexion (optionnel, pour audit)
 CREATE TABLE IF NOT EXISTS login_history (
