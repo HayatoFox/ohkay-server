@@ -23,6 +23,7 @@ import voiceRoutes from './routes/voice';
 import memberRoutes from './routes/members';
 import { setupSocketHandlers } from './socket/handlers';
 import { voiceServer } from './utils/voice-server';
+import { verifyInstancePassword } from './middleware/instanceAuth';
 
 // Load environment variables
 dotenv.config();
@@ -74,6 +75,10 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   next();
 });
 
+// Instance password protection - appliqué globalement
+// Protège /health et toutes les routes API
+app.use(verifyInstancePassword);
+
 // Health check endpoint
 app.get('/health', (_req: Request, res: Response) => {
   res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
@@ -119,21 +124,49 @@ app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
 setupSocketHandlers(io);
 
 // Graceful shutdown
+let isShuttingDown = false;
 const shutdown = async () => {
+  if (isShuttingDown) {
+    logger.warn('Shutdown already in progress...');
+    return;
+  }
+  
+  isShuttingDown = true;
   logger.info('Shutting down gracefully...');
   
-  server.close(() => {
-    logger.info('HTTP server closed');
-  });
+  // Timeout de sécurité : forcer l'arrêt après 10s max
+  const forceShutdownTimer = setTimeout(() => {
+    logger.error('Forced shutdown after timeout');
+    process.exit(1);
+  }, 10000);
   
-  io.close(() => {
-    logger.info('Socket.io server closed');
-  });
-  
-  await dbManager.closeAll();
-  logger.info('All database pools closed');
-  
-  process.exit(0);
+  try {
+    // Arrêter d'accepter de nouvelles connexions
+    server.close(() => {
+      logger.info('HTTP server closed');
+    });
+    
+    // Fermer Socket.io (déconnecter tous les clients)
+    io.close(() => {
+      logger.info('Socket.io server closed');
+    });
+    
+    // Fermer le voice server
+    await voiceServer.close();
+    logger.info('Voice server closed');
+    
+    // Fermer toutes les connexions DB
+    await dbManager.closeAll();
+    logger.info('All database pools closed');
+    
+    clearTimeout(forceShutdownTimer);
+    logger.info('Graceful shutdown completed');
+    process.exit(0);
+  } catch (error: any) {
+    logger.error('Error during shutdown', { error: error.message });
+    clearTimeout(forceShutdownTimer);
+    process.exit(1);
+  }
 };
 
 process.on('SIGTERM', shutdown);

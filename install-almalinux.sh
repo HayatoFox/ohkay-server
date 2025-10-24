@@ -503,15 +503,35 @@ create_systemd_service() {
 [Unit]
 Description=Ohkay Server
 Requires=docker.service
-After=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=$INSTALL_DIR
-ExecStart=/usr/bin/docker compose up -d
-ExecStop=/usr/bin/docker compose down
 User=root
+
+# Démarrage : attendre que les containers soient healthy
+ExecStartPre=/usr/bin/docker compose pull --quiet
+ExecStart=/usr/bin/docker compose up -d
+ExecStartPost=/bin/bash -c 'for i in {1..60}; do /usr/bin/docker inspect --format="{{.State.Health.Status}}" ohkay-server | grep -q "healthy" && exit 0; sleep 2; done; exit 1'
+
+# Arrêt : graceful shutdown avec timeout
+ExecStop=/usr/bin/docker compose down --timeout 20
+
+# Redémarrage : attendre avant de relancer
+RestartSec=10s
+Restart=on-failure
+
+# Timeouts
+TimeoutStartSec=180s
+TimeoutStopSec=30s
+
+# Logs
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ohkay-server
 
 [Install]
 WantedBy=multi-user.target
@@ -520,7 +540,7 @@ EOF
     systemctl daemon-reload
     systemctl enable "$SERVICE_NAME.service"
     
-    print_success "Service systemd créé et activé"
+    print_success "Service systemd créé et activé (avec healthcheck et graceful shutdown)"
 }
 
 # Script de backup

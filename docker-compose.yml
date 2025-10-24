@@ -73,13 +73,14 @@ services:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:8100/health"]
       interval: 10s
       timeout: 5s
-      retries: 3
-      start_period: 30s
+      retries: 5
+      start_period: 40s
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
+    stop_grace_period: 15s  # Temps max pour graceful shutdown
 
   # ========================================
   # POSTGRESQL UNIFIÉ - Toutes les bases de données (v1.1.0)

@@ -408,6 +408,40 @@ class VoiceServer {
   private notifyPeerLeft(_serverId: number, _channelId: number, _userId: number): void {
     // Idem, notification via socket.io
   }
+
+  async close(): Promise<void> {
+    try {
+      logger.info('Closing voice server...');
+      
+      // Fermer toutes les rooms et leurs transports
+      for (const [roomKey, room] of this.rooms.entries()) {
+        logger.info(`Closing voice room: ${roomKey}`);
+        
+        // Fermer tous les transports des peers
+        for (const peer of room.peers.values()) {
+          if (peer.transport) {
+            await peer.transport.close();
+          }
+        }
+        
+        // Fermer le router
+        room.router.close();
+      }
+      
+      this.rooms.clear();
+      
+      // Fermer le worker
+      if (this.worker) {
+        this.worker.close();
+        logger.info('Voice server worker closed');
+      }
+      
+      logger.info('Voice server closed successfully');
+    } catch (error: any) {
+      logger.error('Error closing voice server', { error: error.message });
+      throw error;
+    }
+  }
 }
 
 export const voiceServer = new VoiceServer();
