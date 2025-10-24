@@ -5,6 +5,13 @@
 -- Se connecter à la database auth
 \c ohkay_auth
 
+-- Donner tous les privilèges sur le schema public
+GRANT ALL ON SCHEMA public TO ohkay_user;
+GRANT ALL ON ALL TABLES IN SCHEMA public TO ohkay_user;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO ohkay_user;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO ohkay_user;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO ohkay_user;
+
 -- Utilisateurs globaux
 CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,

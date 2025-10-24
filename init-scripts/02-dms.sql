@@ -5,6 +5,13 @@
 -- Se connecter à la database dms
 \c ohkay_dms
 
+-- Donner tous les privilèges sur le schema public
+GRANT ALL ON SCHEMA public TO ohkay_user;
+GRANT ALL ON ALL TABLES IN SCHEMA public TO ohkay_user;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO ohkay_user;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO ohkay_user;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO ohkay_user;
+
 -- Conversations privées entre 2 utilisateurs
 CREATE TABLE IF NOT EXISTS dm_conversations (
     id SERIAL PRIMARY KEY,
